@@ -12,7 +12,6 @@ from collections import defaultdict
 import pickle
 from visualization import tensors_to_df
 from itertools import combinations
-from eval.fid_score import calculate_fid_given_data
 from torch.distributions.categorical import Categorical
 
 def cluster_analysis(labels, path_name, zss_sampled):

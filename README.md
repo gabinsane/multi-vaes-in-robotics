@@ -26,7 +26,8 @@ conda activate multivae
 For evaluation, you will also need to install our local, adapted version of the [LANRO simulator](https://github.com/frankroeder/lanro-gym):
 
 ```
-cd models/lanro_simulator
+pip install gymnasium
+cd models/lanro_gym
 pip install -e .
 ```
 
@@ -46,7 +47,7 @@ You can run the training with the chosedn config as follows (assuming you downlo
 
 ```
 cd ~/multi-vaes-in-robotics/
-python main.py --cfg configs/mmvae/config_lanro_d2.yml
+python main.py --cfg configs/mmvae/config_lanro_d1.yml
 ```
 
 We provide configs for the experiments mentioned in the paper in the configs/ folder (sorted according to models and datasets). 
