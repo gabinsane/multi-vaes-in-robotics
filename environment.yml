@@ -45,7 +45,7 @@ dependencies:
   - pip:
     - adabelief-pytorch
     - colorthief
-    - opencv-python
+    - opencv-python-headless
     - pixyz
     - pyttsx3
     - torchnet

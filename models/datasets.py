@@ -1,15 +1,12 @@
 import torch
 import cv2, os
 import numpy as np
-import math, copy
-import wget
-from utils import one_hot_encode, output_onehot2text, lengths_to_mask, turn_text2image, load_data, add_recon_title
+import math
 import pickle
-from utils import one_hot_encode, output_onehot2text, lengths_to_mask, turn_text2image, load_data, add_recon_title, one_hot_encode_words, seq2words
+from utils import one_hot_encode, lengths_to_mask, turn_text2image, load_data, add_recon_title, one_hot_encode_words, seq2words
 from torchvision.utils import make_grid
-import imageio
 from itertools import compress
-import torchvision
+
 
 class BaseDataset():
     """
@@ -312,9 +309,6 @@ class LANRO(BaseDataset):
     def get_objects(self):
         data = self.get_data_raw()
         data = [torch.from_numpy(np.asarray(x[0])) for x in data]
-        #masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
-        #data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0.0)
-        #data_and_masks = torch.cat((data.reshape(data.shape[0],self.feature_dims[self.mod_type][0], -1), masks), dim=-1)
         return torch.stack(data)
 
     def get_shapes(self):
@@ -322,9 +316,6 @@ class LANRO(BaseDataset):
         data = self.get_data_raw()
         d = [one_hot_encode_words(self.vocab_atts, f) for f in data]
         data = [torch.from_numpy(np.asarray(x)) for x in d]
-        #masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
-        #data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0.0)
-        #data_and_masks = torch.cat((data.reshape(data.shape[0],self.feature_dims[self.mod_type][0], -1), masks), dim=-1)
         return torch.stack(data)
 
     def get_colors(self):
@@ -333,9 +324,6 @@ class LANRO(BaseDataset):
         data = self.get_data_raw()
         d = [one_hot_encode_words(self.vocab_atts, f) for f in data]
         data = [torch.from_numpy(np.asarray(x)) for x in d]
-        #masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
-        #data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0.0)
-        #data_and_masks = torch.cat((data.reshape(data.shape[0],self.feature_dims[self.mod_type][0], -1), masks), dim=-1)
         return torch.stack(data)
 
     def get_actions(self):
@@ -350,7 +338,6 @@ class LANRO(BaseDataset):
     def get_lang(self):
         self.has_masks = True
         self.categorical = True
-        #return self._preprocess_text_onehot()
         data = self.get_data_raw()
         self.lang_labels = data
         d = [[self.vocab.index(s) for s in sentence.replace(" object", "").strip().split(" ")] for sentence in data] #[one_hot_encode_words(self.vocab, f.split(" ")) for f in data]
