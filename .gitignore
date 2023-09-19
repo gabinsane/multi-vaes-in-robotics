@@ -1,0 +1,5 @@
+./data/*
+./results/
+.idea
+__pycache__/
+builddocs.txt

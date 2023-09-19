@@ -1,0 +1,43 @@
+batch_size: 32
+epochs: 200
+exp_name: lanro_mvae_d4
+labels:
+beta: 1
+lr: 1e-3
+mixing: poe
+iterseeds: 1
+n_latents: 64
+obj: elbo
+optimizer: adam
+pre_trained: null
+seed: 2
+viz_freq: 100
+test_split: 0.1
+dataset_name: lanro
+modality_1:
+  decoder: TxtTransformer
+  encoder: TxtTransformer
+  prior: normal
+  recon_loss: gaussian_nll
+  mod_type: language
+  growtype: neurons
+  path: ./data/lanro_ycb/lanro_instructions.pkl
+  test_datapath:
+modality_2:
+  decoder: Transformer
+  encoder: Transformer
+  recon_loss: gaussian_nll
+  mod_type: actions
+  prior: normal
+  growtype: neurons
+  path: ./data/lanro_ycb/lanro_actions.pkl
+  test_datapath:
+modality_3:
+  decoder: CNN
+  encoder: RESCNN
+  recon_loss: gaussian_nll
+  prior: normal
+  mod_type: front RGB
+  growtype: neurons
+  path: ./data/lanro_ycb/lanro_images.pkl
+  test_datapath:
