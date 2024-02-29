@@ -62,6 +62,85 @@ class ResUp(nn.Module):
         return self.act_fnc(self.bn2(x + skip))
 
 
+class MultiTransformer(nn.Module):
+    def __init__(self, latent_dim, zero_masking, decoder, use_ml_layers,  output_mean, pos_encoding=1,ff_size=2048, num_layers=2, num_heads=2, dropout=0.1, activation="gelu"):
+        """
+        Transformer network for multimodal fusion
+        :param latent_dim: int, latent vector dimensionality
+        :param data_dim: list, dimensions of the data (e.g. [42, 25, 3] for sequences of max. length 42, 25 joints and 3 features per joint)
+        """
+        super(MultiTransformer, self).__init__()
+        self.latent_dim = latent_dim
+
+        self.ff_size = ff_size
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.activation = activation
+        self.zero_masking = int(zero_masking) == 1
+        self.pos_encoding = pos_encoding == 1 
+        self.output_mean = int(output_mean) == 1
+        self.use_decoder = decoder==1
+        self.use_ml_layers = use_ml_layers==1
+
+        self.input_feats = self.latent_dim 
+        self.mu_layer = torch.nn.DataParallel(nn.Linear(self.latent_dim, self.latent_dim))
+        self.logvar_layer = torch.nn.DataParallel(nn.Linear(self.latent_dim, self.latent_dim))
+
+        self.skelEmbedding = torch.nn.DataParallel(nn.Linear(self.input_feats, self.latent_dim))
+        if self.pos_encoding:
+            self.sequence_pos_encoder = PositionalEncoding(self.latent_dim, self.dropout)
+        seqTransEncoderLayer = (nn.TransformerEncoderLayer(d_model=self.latent_dim,
+                                                                                nhead=self.num_heads,
+                                                                                dim_feedforward=self.ff_size,
+                                                                                dropout=self.dropout,
+                                                                                activation=self.activation))
+        self.seqTransEncoder = (
+            nn.TransformerEncoder(seqTransEncoderLayer, num_layers=self.num_layers))
+        if self.use_decoder:
+            seqTransDecoderLayer = (nn.TransformerDecoderLayer(d_model=self.latent_dim,
+                                                              nhead=self.num_heads,
+                                                              dim_feedforward=self.ff_size,
+                                                              dropout=self.dropout,
+                                                              activation=activation))
+            self.seqTransDecoder = (nn.TransformerDecoder(seqTransDecoderLayer,
+                                                         num_layers=self.num_layers))
+
+
+    def forward(self, batch):
+        x = batch.float()
+        nframes, bs, njoints, nfeats = x.shape
+        mask = torch.tensor(np.ones((bs, nframes), dtype=bool)).cuda()
+        if self.zero_masking:
+            for ix, sample in enumerate(x.permute(1,0,2,3)):
+                for ix2, frame in enumerate(sample):
+                     if torch.count_nonzero(frame) == 0:
+                            mask[ix][ix2] = torch.tensor(False).cuda()
+        x = x.reshape(nframes, bs, nfeats*njoints)
+        # embedding of the skeleton
+        x = self.skelEmbedding(x.cuda())
+        # add positional encoding
+        if self.pos_encoding:
+            x = self.sequence_pos_encoder(x)
+        # transformer layers
+        final = self.seqTransEncoder(x, src_key_padding_mask=~mask)
+        if self.use_decoder:
+            timequeries = torch.zeros(mask.shape[1], bs, self.latent_dim, device=final.device)
+            timequeries = self.sequence_pos_encoder(timequeries)
+            final = self.seqTransDecoder(tgt=timequeries, memory=final, tgt_key_padding_mask=~mask)
+        if not self.use_ml_layers:
+            mu = final[0]
+            logvar = final[1]
+        else:
+            if self.output_mean:
+                z = final.mean(axis=0)
+            else:
+                z = final[0]
+            mu = self.mu_layer(z)
+            logvar = self.logvar_layer(z)
+        logvar = F.softmax(logvar, dim=-1)
+        return mu, logvar
+
 class Flatten(torch.nn.Module):
     def forward(self, x):
         return x.view(x.size(0), -1)

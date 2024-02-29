@@ -1,0 +1,49 @@
+batch_size: 128
+beta: 1
+dataset_name: lanrol1
+epochs: 400
+exp_name: d4b_mopoe_mse
+iterseeds: 1
+labels: null
+lr: 1e-3
+mixing: mopoe
+modality_1:
+  decoder: TxtTransformer
+  encoder: TxtTransformer
+  growtype: neurons
+  llik_scaling: 1
+  mod_type: language
+  path: ./data/lanro/D4b/instructions_final.pkl
+  prior: normal
+  private_latents: null
+  recon_loss: category_ce
+  test_datapath: null
+modality_2:
+  decoder: Transformer
+  encoder: Transformer
+  growtype: neurons
+  llik_scaling: 1
+  mod_type: actions
+  path: ./data/lanro/D4b/endeff_actions_final.pkl
+  prior: normal
+  private_latents: null
+  recon_loss: mse
+  test_datapath: null
+modality_3:
+  decoder: CNN
+  encoder: CNN
+  growtype: neurons
+  llik_scaling: 1
+  mod_type: front RGB
+  path: ./data/lanro/D4b/image_final.pkl
+  prior: normal
+  private_latents: null
+  recon_loss: mse
+  test_datapath: null
+n_latents: 32
+obj: elbo
+optimizer: adam
+pre_trained: null
+seed: 2
+test_split: 0.1
+viz_freq: 100

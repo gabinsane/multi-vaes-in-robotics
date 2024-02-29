@@ -1,11 +1,11 @@
 # Multimodal VAEs in Robotics
 
-This is the official code for the ICRA 2024 submission "Bridging Language, Vision and Action: Multimodal VAEs in Robotic Manipulation Tasks".
+This is the official code for the IROS 2024 submission "Bridging Language, Vision and Action: Multimodal VAEs in Robotic Manipulation Tasks".
 
-We provide implementations of the [MVAE](https://github.com/mhw32/multimodal-vae-public) 
+We include implementations of the [MVAE](https://github.com/mhw32/multimodal-vae-public) 
 ([paper](https://arxiv.org/abs/1802.05335)), [MMVAE](https://github.com/iffsid/mmvae) 
-([paper](https://arxiv.org/pdf/1911.03393.pdf)), [MoPoE](https://github.com/thomassutter/MoPoE) 
-([paper](https://openreview.net/forum?id=5Y21V0RDBV)) and [DMVAE](https://github.com/seqam-lab/DMVAE) ([paper](https://github.com/seqam-lab/DMVAE)) models.
+([paper](https://arxiv.org/pdf/1911.03393.pdf)) and [MoPoE](https://github.com/thomassutter/MoPoE) 
+([paper](https://openreview.net/forum?id=5Y21V0RDBV)) models.
 
 ## Preliminaries
 
@@ -32,13 +32,19 @@ pip install -e .
 ```
 
 ## Dataset download 
-You can download any of the following difficulty levels: D1, D2, D3 and D4
+You can download the datasets based on their codes. The codes are the following (explanations are provided in the paper):
+
+![Coding 1]( "dataset codes")
+
+![Coding 2]( "dataset codes")
+
+
 The dataset should be placed in the ./data/lanro directory. For downloading, unzipping and moving the chosen dataset, run:
 
 ```
 cd ~/multi-vaes-in-robotics/
-wget https://data.ciirc.cvut.cz/public/groups/incognite/LANRO/D1.zip   # replace D1 with D2, D3 or D4 for each dataset
-unzip D1.zip -d ./data/lanro   # replace D1 with D2, D3 or D4 for each dataset
+wget https://data.ciirc.cvut.cz/public/groups/incognite/LANRO/d1a.zip   # replace d1a with codes from the tables above
+unzip d1a.zip -d ./data/lanro 
 ```
 
 ## Setup and training
@@ -47,7 +53,7 @@ You can run the training with the chosedn config as follows (assuming you downlo
 
 ```
 cd ~/multi-vaes-in-robotics/
-python main.py --cfg configs/mmvae/config_lanro_d1.yml
+python main.py --cfg configs/mmvae/d1a/config_lanro.yml
 ```
 
 We provide configs for the experiments mentioned in the paper in the configs/ folder (sorted according to models and datasets). 

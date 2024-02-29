@@ -96,12 +96,13 @@ class MultimodalVAE(pl.LightningModule):
             return self.model
         vaes = {}
         for i, m in enumerate(self.config.mods):
+            enc_mu_logvar = False if self.config.mixing == "htvae" else True
             vaes["mod_{}".format(i + 1)] = VAE(m["encoder"], m["decoder"], self.feature_dims[m["mod_type"]],
                                                self.config.n_latents, m["recon_loss"], m["private_latents"],
                                                obj_fn=self.config.obj,
                                                beta=self.config.beta, id_name="mod_{}".format(i + 1),
                                                prior_dist=m["prior"], post_dist=m["prior"], likelihood_dist=m["prior"],
-                                               llik_scaling=m["llik_scaling"])
+                                               llik_scaling=m["llik_scaling"], enc_mu_logvar=enc_mu_logvar)
         if len(self.config.mods) > 1:
             vaes = nn.ModuleDict(vaes)
             obj_cfg = {"obj": self.config.obj, "beta": self.config.beta, "K":self.config.K}
@@ -113,11 +114,19 @@ class MultimodalVAE(pl.LightningModule):
         self.save_hyperparameters()
         return self.model
 
+    def get_forbidden_mod_combos(self):
+        forbidden_combos = self.datamod.datasets[0].forbidden_subsets
+        for i, s in enumerate(forbidden_combos):
+            for key, value in self.mod_names.items():
+                if value in forbidden_combos[i]:
+                    forbidden_combos[i] = s.replace(value, key)
+        return forbidden_combos
+
     def training_step(self, train_batch, batch_idx):
         """
         Iterates over the train loader
         """
-        loss_d = self.model.objective(train_batch)
+        loss_d = self.model.objective(train_batch, self.get_forbidden_mod_combos())
         for key in loss_d.keys():
             if key != "reconstruction_loss":
                 self.log("train_{}".format(key), loss_d[key].sum(), batch_size=self.config.batch_size)
@@ -164,8 +173,11 @@ class MultimodalVAE(pl.LightningModule):
             os.makedirs(savepath, exist_ok=True)
             self.analyse_data(savedir=savepath)
             self.save_reconstructions(savedir=savepath)
-            #self.save_joint_samples(savedir=savepath, num_samples=10, traversals=True)
-            #recons = self.save_joint_samples(num_samples=100, savedir=savepath, traversals=False)
+            try:
+                self.save_joint_samples(savedir=savepath, num_samples=10, traversals=True)
+                self.save_joint_samples(num_samples=64, savedir=savepath, traversals=False)
+            except:
+                pass
 
 
     def test_epoch_end(self, outputs):
@@ -245,7 +257,7 @@ class MultimodalVAE(pl.LightningModule):
         return recons
 
 
-    def analyse_data(self, data=None, labels=None, num_samples=250, path_name="", savedir=None, split="val", fn_list=["tsne"]):
+    def analyse_data(self, data=None, labels=None, num_samples=250, path_name="", savedir=None, split="val", fn_list=["tsne"], device=None):
         """
         Encodes data and plots T-SNE. If no data is passed, a dataloader (based on split="val"/"test") will be used.
 
@@ -264,7 +276,7 @@ class MultimodalVAE(pl.LightningModule):
         """
         if not data:
             data, labels = self.datamod.get_num_samples(num_samples, split=split)
-        output_dic = self.eval_forward(data)
+        output_dic = self.eval_forward(data, device=device)
         pz = self.model.get_pz([x for x in self.model.pz_params])
         zss_sampled = [pz.sample(torch.Size([1, num_samples])).view(-1, pz.batch_shape[-1]),
                        *[zs["latents"].view(-1, zs["latents"].size(-1)) for zs in output_dic["latent_samples"]]]
@@ -282,8 +294,9 @@ class MultimodalVAE(pl.LightningModule):
                   self.mod_names)
         return None
 
-    def eval_forward(self, data):
-        data_i = check_input_unpacked(data_to_device(data, self.device))
+    def eval_forward(self, data, device=None):
+        device = device if device is not None else self.device
+        data_i = check_input_unpacked(data_to_device(data, device))
         output = self.model.forward(data_i)
         output_dic = output.unpack_values()
         return output_dic

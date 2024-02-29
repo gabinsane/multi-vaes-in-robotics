@@ -12,7 +12,7 @@ from models.objectives import UnimodalObjective
 
 class DencoderFactory(object):
     @classmethod
-    def get_nework_classes(cls, enc_name, dec_name, n_latents, private_latents,data_dim:tuple):
+    def get_nework_classes(cls, enc_name, dec_name, n_latents, private_latents,data_dim:tuple, enc_mu_logvar:bool):
         """
         Instantiates the encoder and decoder networks
 
@@ -24,7 +24,7 @@ class DencoderFactory(object):
        :rtype: tuple(object, object)
        """
         assert hasattr(encoders, "Enc_{}".format(enc_name)), "Did not find encoder {}".format(enc_name)
-        enc_obj = getattr(encoders, "Enc_{}".format(enc_name))(n_latents, data_dim, private_latents)
+        enc_obj = getattr(encoders, "Enc_{}".format(enc_name))(n_latents, data_dim, private_latents, enc_mu_logvar)
         assert hasattr(decoders, "Dec_{}".format(dec_name)), "Did not find decoder {}".format(dec_name)
         dec_obj = getattr(decoders, "Dec_{}".format(dec_name))(n_latents, data_dim, private_latents)
         return enc_obj, dec_obj
@@ -120,7 +120,7 @@ class BaseVae(nn.Module):
 
 class VAE(BaseVae):
     def __init__(self, enc, dec, feature_dim, n_latents, ltype, private_latents=None, llik_scaling=1, prior_dist="normal",
-                 likelihood_dist="normal", post_dist="normal", obj_fn=None, beta=1, id_name="mod_1"):
+                 likelihood_dist="normal", post_dist="normal", obj_fn=None, beta=1, id_name="mod_1", enc_mu_logvar=True):
         """
         The general unimodal VAE module, can be used separately or in a multimodal VAE
 
@@ -139,14 +139,13 @@ class VAE(BaseVae):
         :param post_dist: posterior distribution
         :type post_dist: torch.dist
         """
-        self.prior_str = prior_dist
-        dists = {"normal":dist.Normal, "gumbel":dist.Categorical, "categorical":Categorical}
-        prior_dist = dists[prior_dist]
-        post_dist = dists[post_dist]
-        likelihood_dist = dists[likelihood_dist]
-        if prior_dist == dist.Categorical:
-            n_latents = n_latents * feature_dim[1]
-        enc_net, dec_net = DencoderFactory().get_nework_classes(enc, dec, n_latents, private_latents, feature_dim)
+        dist_map = {"normal":dist.Normal, "categorical":dist.Categorical, "laplace":dist.Laplace,
+                    "gumbel":dist.Gumbel, "gaussian": dist.Normal}
+        self.prior_str = prior_dist.lower()
+        prior_dist = dist_map[prior_dist.lower()]
+        post_dist = dist_map[post_dist.lower()]
+        likelihood_dist = dist_map[likelihood_dist.lower()]
+        enc_net, dec_net = DencoderFactory().get_nework_classes(enc, dec, n_latents, private_latents, feature_dim, enc_mu_logvar)
         super(VAE, self).__init__(enc_net, dec_net, prior_dist, likelihood_dist, post_dist)
         self._qz_x_params, self._pz_params_private = None, None
         self.llik_scaling = llik_scaling

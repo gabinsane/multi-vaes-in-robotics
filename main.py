@@ -41,8 +41,8 @@ def main(config):
     data_module = DataModule(config)
     model_wrapped = MultimodalVAE(config, data_module.get_dataset_class().feature_dims)
     profiler = SimpleProfiler(dirpath=os.path.join(config.mPath, "model"), filename="profiler_output")
-    checkpoint_callback = ModelCheckpoint(dirpath=os.path.join(config.mPath, "model"), save_last=True, save_top_k=1, mode="min")
-    logger2 = CSVLogger(save_dir=config.mPath, name="metrics", flush_logs_every_n_steps=1, version="csv")
+    checkpoint_callback = ModelCheckpoint(dirpath=os.path.join(config.mPath, "model"), filename="last",  save_last=False, mode="min")
+    logger2 = CSVLogger(save_dir=config.mPath, name="metrics", flush_logs_every_n_steps=100, version="csv")
     logger1 = TensorBoardLogger(config.mPath, name="metrics", log_graph=True, version="tensorboard")
     trainer_kwargs = {"profiler": profiler, "accelerator":"gpu",
                       "default_root_dir": config.mPath, "max_epochs": config.epochs, "check_val_every_n_epoch": 1,

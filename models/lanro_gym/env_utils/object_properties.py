@@ -17,6 +17,8 @@ class SHAPES(Enum):
     TOOTHPASTE = 6, ["toothpaste"],
     STAPLER = 7, ["stapler"],
     TEABOX = 8, ["tea box"],
+    DRAWER = 9, ["drawer"],
+    NOTHING = 10, ["nothing"],
 
 class RGBCOLORS(Enum):
     """ RGBColors enum class with all colors defined as array of floats [0, 1]"""

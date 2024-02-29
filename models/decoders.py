@@ -577,12 +577,12 @@ class Dec_Transformer(VaeDecoder):
         self.input_feats = self.njoints * self.nfeats
         self.sequence_pos_encoder = torch.nn.DataParallel(PositionalEncoding(self.out_dim, self.dropout))
 
-        seqTransDecoderLayer = torch.nn.DataParallel(nn.TransformerDecoderLayer(d_model=self.out_dim,
+        seqTransDecoderLayer = (nn.TransformerDecoderLayer(d_model=self.out_dim,
                                                                                 nhead=self.num_heads,
                                                                                 dim_feedforward=self.ff_size,
                                                                                 dropout=self.dropout,
                                                                                 activation=activation))
-        self.seqTransDecoder = torch.nn.DataParallel(nn.TransformerDecoder(seqTransDecoderLayer,
+        self.seqTransDecoder = (nn.TransformerDecoder(seqTransDecoderLayer,
                                                                            num_layers=self.num_layers))
         self.finallayer = torch.nn.DataParallel(nn.Linear(self.out_dim, self.input_feats))
 
@@ -695,12 +695,12 @@ class Dec_TxtTransformer(VaeDecoder):
 
         self.input_feats = self.njoints * self.nfeats
         self.sigmoid = nn.Sigmoid()
-        seqTransDecoderLayer = torch.nn.DataParallel(nn.TransformerDecoderLayer(d_model=self.out_dim,
+        seqTransDecoderLayer = (nn.TransformerDecoderLayer(d_model=self.out_dim,
                                                                                 nhead=self.num_heads,
                                                                                 dim_feedforward=self.ff_size,
                                                                                 dropout=self.dropout,
                                                                                 activation=activation))
-        self.seqTransDecoder = torch.nn.DataParallel(nn.TransformerDecoder(seqTransDecoderLayer,
+        self.seqTransDecoder = (nn.TransformerDecoder(seqTransDecoderLayer,
                                                                            num_layers=self.num_layers))
         self.finallayer = torch.nn.DataParallel(nn.Linear(self.out_dim, self.input_feats))
         self.sequence_pos_encoder = torch.nn.DataParallel(PositionalEncoding(self.out_dim, self.dropout))

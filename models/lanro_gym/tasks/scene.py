@@ -1,7 +1,7 @@
 from lanro_gym.simulation import PyBulletSimulation
 
-PLANE_COLOR = [0.37, 0.37, 0.37, 1]
-TABLE_COLOR = [0.95, 0.95, 0.95, 1]
+PLANE_COLOR = [1, 1, 1, 1]
+TABLE_COLOR = [1, 1, 1, 1]
 
 
 def basic_scene(
@@ -9,8 +9,8 @@ def basic_scene(
     plane_z_offset: float = -0.4,
     plane_x_pos: float = -0.2,
     plane_length: float = 0.8,
-    table_length: float = 0.8,
-    table_width: float = 0.8,
+    table_length: float = 1.8,
+    table_width: float = 1.8,
     table_height: float = 0.4,
     table_x_offset: float = -0.1,
     table_z_offset: float = 0.0,

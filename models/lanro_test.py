@@ -2,66 +2,229 @@
 import gymnasium as gym
 import lanro_gym
 import pickle, math
-import argparse
 import numpy as np
 import cv2, os
 import glob
-from eval.infer import MultimodalVAEInfer
+import sys
+import torch
+import random
 import copy
+import matplotlib.pyplot as plt
 import time, os
-from models.datasets import LANRO
+from pathlib import Path
 from typing import List
+import inspect
+currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
+parentdir = os.path.dirname(currentdir)
+sys.path.insert(0, parentdir) # for bash user
+os.chdir(parentdir) # for pycharm user
 import pybullet as p
+from eval.infer import MultimodalVAEInfer
+from models.datasets import DRAWER
 
-def scale_rgb(rgb_lst: List[float]) -> List[float]:
-    return [_color / 255.0 for _color in rgb_lst]
+SLOW_VIS = False
+SCENES = {"1":"move left", "2":"move right", "3":"lift", "4":["move right", "lift"], "5":["move left", "lift", "move right"], "6":"reach", "7":"lift",
+          "a":1, "b":1, "c":2, "d":3}
+OBJECTS = ["lemon", "apple", "soap"]
+FIXEDPOSE = [0,0,0.05]
+X_axis_pos = [0,0.24]
+Y_axis_pos = [-0.12,0.12]
 
-def colormap(color):
-    map = {"RED": scale_rgb([255.0, 87.0, 89.0]), "BLUE":scale_rgb([78.0, 121.0, 167.0]), "GREEN":scale_rgb([89.0, 169.0, 79.0]), "YELLOW":scale_rgb([255,255,0])}
-    return map[color]
+def default_rot():
+    return list(env.env.env.env.robot.default_arm_orn_RPY)
 
-def make_object(shape, pos, name):
-    if shape.lower() == "soap":
-        env.env.env.env.sim.loadURDF(body_name=name,
-                               fileName="./models/lanro_gym/objects_urdfs/soap.urdf",
-                               basePosition=[0, 0, 0.1])
-    elif shape.lower() == "mug":
-        env.env.env.env.sim.loadURDF(body_name=name,
-                               fileName="./models/lanro_gym/objects_urdfs/mug.urdf"
-                               )
-    elif shape.lower() == "lemon":
-       env.env.env.env.sim.loadURDF(body_name=name,
-                               fileName="./models/lanro_gym/objects_urdfs/lemon.urdf")
-    elif shape.lower() == "toothpaste":
-        env.env.env.env.sim.loadURDF(body_name=name,
-                               fileName="./models/lanro_gym/objects_urdfs/toothpaste.urdf")
-    elif shape.lower() == "stapler":
-        env.env.env.env.sim.loadURDF(body_name=name,
-                               fileName="./models/lanro_gym/objects_urdfs/stapler.urdf")
-    elif shape.lower() == "teabox":
-        env.env.env.env.sim.loadURDF(body_name=name,
-                               fileName="./models/lanro_gym/objects_urdfs/teabox.urdf")
-    env.env.env.env.sim.set_base_pose(name, pos, [0, 0, 0, 1])
+def make_step(pose):
+    if len(pose) == 4:
+        pose = pose[:3] + list(env.env.env.env.robot.default_arm_orn_RPY) + [pose[-1]]
+    env.step(pose)
+    if render:
+        #pass
+        time.sleep(.1)
+
+def get_quat(euler):
+    return p.getQuaternionFromEuler(euler)
+
+def robot_pose():
+    return env.env.env.env.robot.get_ee_position()
+
+def handle_pos():
+    return env.env.env.env.sim.get_link_state("drawer", 1)[0]
+
+def object_pos(id):
+    return env.env.env.env.sim.get_base_position(id)
+
+def drawer_pos():
+    return env.env.env.env.sim.get_link_state("drawer", 2)[0]
+
+def random__pos(x_var=True, y_var=True):
+    x = random.uniform(*(X_axis_pos)) if x_var else 0
+    y = random.uniform(*(Y_axis_pos)) if y_var else 0
+    dr_pos = [x, y, 0.05]
+    return dr_pos
+
+def random__pos_when_drawer(x_var=True, y_var=True):
+    x = random.uniform(*([-0.1,0])) if x_var else 0
+    y = random.choice([random.uniform(*([-0.19,-0.16])), random.uniform(*([0.16,0.19]))]) if y_var else 0.18
+    dr_pos = [x, y, 0.05]
+    return dr_pos
+
+def random__pos_drawer(x_var=True, y_var=True):
+    x = random.uniform(*([0.25,0.29])) if x_var else 0.25
+    y = random.uniform(*([-0.04,0.04])) if y_var else 0
+    dr_pos = [x, y, 0.05]
+    return dr_pos
+
+def get_handle_moving_point(opening=True):
+    handle = list(handle_pos())
+    x1, y1 = handle[0], handle[1]
+    drawer = list(drawer_pos())
+    x0, y0 = drawer[0], drawer[1]
+    dx = x1 - x0
+    dy = y1 - y0
+    t = 0.16 if opening else -0.16
+    length = ((dx)**2 + (dy)**2)**0.5
+    
+    scale_factor = t / length
+
+    x2 = x1 + scale_factor * dx
+    y2 = y1 + scale_factor * dy
+    z2 = handle[2]
+    env.env.env.env.sim.bclient.addUserDebugText("x", [x2, y2, z2], textSize=1.0, replaceItemUniqueId=3)
+    return [x2, y2, z2]
 
 
-def load_pickle(path):
-  with open(path, 'rb') as handle:
-    data = pickle.load(handle)
-  return data
+def goto_pose(pose):
+    r_p = robot_pose()
+    counter = 0
+    while sum(abs(robot_pose() -  pose[:3])) > 0.01:
+        counter += 1
+        make_step(pose)
+        if sum(abs(robot_pose() - r_p)) < 0.001: 
+            break # robot is no longer moving, probably physical constraints
+        else:
+            r_p = robot_pose()
+        if counter == 20:
+            print("moving glitch")
+            break
+        if SLOW_VIS:
+            time.sleep(.1)
+
+def go_above(pose):
+    above_pose = pose
+    above_pose[2] = 0.25
+    goto_pose(above_pose)
+
+def set_gripper(current_pose, open:bool, perform_step=False, rotation=None):
+    g = 1 if open else -1
+    current_pose = list(current_pose)
+    if len(current_pose) in [4,8]:
+        if rotation is None:
+            current_pose[-1] = g
+        else:
+            current_pose = current_pose[:3] + rotation + [g]
+    elif len(current_pose) == 3:
+        if rotation is not None:
+            current_pose += rotation
+        current_pose.append(g)
+    else:
+        raise Exception("Wrong action size {}".format(len(current_pose)))
+    if perform_step:
+        make_step(current_pose)
+    return current_pose
+
+def spawn_drawer():
+    drawer_id = env.env.env.env.sim.loadURDF(body_name="drawer",
+                                fileName="./models/lanro_gym/objects_urdfs/cabinet.urdf", useFixedBase=True)
+    rand_orn = random.uniform(-0.2,0.2)
+    rand_pos = [random.uniform(0.14,0.35), random.uniform(-0.2,0.2), 0.1]
+    env.env.env.env.sim.set_base_pose("drawer", rand_pos, [0, 0, rand_orn, 1])
+    p.changeVisualShape(drawer_id, 0, rgbaColor=[0.5, 0.3, 0.1, 1])
+    p.changeVisualShape(drawer_id, -1, rgbaColor=[0.8, 0.5, 0.3, 1])
+
+def setup_scene(objects, targetobject, env, drawer=False):
+    poses = [FIXEDPOSE] if (task[-1] == "a" and int(task[1]) <7) else [random__pos() for _ in objects]
+    if int(task[1]) == 7:
+        if task[2] in ["a", "b"]:
+            poses = [random__pos(y_var=False)]
+        else:
+            poses = [random__pos_when_drawer(y_var=False)]
+    if int(task[1]) > 7:
+        if task[2] in ["a", "b"]:
+            poses = [random__pos()]
+        else:
+            poses = [random__pos_when_drawer()]   
+    targetobj_id, drawer_id = None, None
+    o_ids = []
+    for i, o in enumerate(objects):
+        oid = env.env.env.env.sim.loadURDF(body_name="object_{}".format(o),
+                                    fileName="./models/lanro_gym/objects_urdfs/{}.urdf".format(o), useFixedBase=False)
+        if o == targetobject:
+            targetobj_id = "object_{}".format(o)
+        o_ids.append("object_{}".format(o))
+        env.env.env.env.sim.set_base_pose("object_{}".format(o), poses[i], [0, 0, 0, 1])
+    if drawer:
+        drawer_id = env.env.env.env.sim.loadURDF(body_name="drawer",
+                                    fileName="./models/lanro_gym/objects_urdfs/cabinet.urdf", useFixedBase=True)
+        p.changeVisualShape(drawer_id, 0, rgbaColor=[0.5, 0.3, 0.1, 1])
+        p.changeVisualShape(drawer_id, -1, rgbaColor=[0.8, 0.5, 0.3, 1])
+        pos = random__pos_drawer(y_var=False) if int(task[1]) == 7 else random__pos_drawer()
+        env.env.env.env.sim.set_base_pose("drawer", [pos[0], pos[1], 0.1], [0, 0, 0, 1])
+        o_ids.append("drawer")
+        manual_drawer_open(drawer_id)
+    return o_ids, targetobj_id, drawer_id
 
 
-def process_model_output(output, mod_name):
-    return output.mods[get_mod_idx(mod_name)].decoder_dist.loc.detach().cpu().numpy()
+def rotate_gripper_to_drawer(perform=True):
+    gripper_rot=default_rot()
+    last_rot = env.env.env.env.robot.sim.get_link_state(env.env.env.env.robot.body_name,6)[1]
+    gripper_rot[1] = env.env.env.env.sim.get_base_orientation("drawer")[2]
+    rpose = robot_pose()
+    rpose[-1] = 0.2
+    counter = 0
+    while True:
+        set_gripper(rpose, open=True, rotation=gripper_rot, perform_step=perform)
+        counter += 1
+        rot = env.env.env.env.robot.sim.get_link_state(env.env.env.env.robot.body_name,6)[1]
+        if (sum(abs(np.array(rot) - np.array(last_rot))) < 0.001) or perform== False:
+            break
+        last_rot = rot
+        if counter == 20:
+            print("rotating glitch")
+            break
+    return gripper_rot
 
 
-def postprocess_data(data, mod):
-    return infer_model.datamod.datasets[int(mod.split("_")[-1])-1]._postprocess(data[mod])
+def manual_drawer_open(id):
+    p.setJointMotorControlArray(bodyUniqueId=id,
+            jointIndices=[0],
+            controlMode=env.env.env.sim.bclient.POSITION_CONTROL,
+            targetPositions=[2.2],
+            forces=[10],)
 
+def manual_drawer_closed(id):
+    p.setJointMotorControlArray(bodyUniqueId=id,
+            jointIndices=[0],
+            controlMode=env.env.env.sim.bclient.POSITION_CONTROL,
+            targetPositions=[0],
+            forces=[100],)
 
 def get_mod_idx(name):
     for key, item in infer_model.model.mod_names.items():
         if item == name:
             return key
+
+def reach(targetobj_id):
+    object_pose = set_gripper(object_pos(targetobj_id), open=True)
+    go_above(object_pose)
+    obj_pos = list(object_pos(targetobj_id))
+    goto_pose(set_gripper(obj_pos, open=True))
+
+def get_img(env):
+    return env.env.env.env.robot.get_camera_img()
+
+def process_model_output(output, mod_name):
+    return output.mods[get_mod_idx(mod_name)].decoder_dist.loc.detach().cpu().numpy()
+
 
 def cast_dict_to_cuda(d):
     for key in d.keys():
@@ -71,218 +234,156 @@ def cast_dict_to_cuda(d):
             d[key]["masks"] = d[key]["masks"].cuda()
     return d
 
-def load_testdata():
-    test_actions = "{}{}/lanro_robot_ees.pkl".format(pt, testset)
-    joints = "{}{}/lanro_actions.pkl".format(pt, testset)
-    test_instructions = "{}{}/lanro_instructions.pkl".format(pt, testset)
-    test_objects = "{}{}/lanro_object_poses.pkl".format(pt, testset)
-    test_images = "{}{}/lanro_images.pkl".format(pt, testset)
-    test_colors = "{}{}/lanro_colors.pkl".format(pt, testset)
-    test_shapes = "{}{}/lanro_shapes.pkl".format(pt, testset)
-    correct_objects = "{}{}/correct_objects.pkl".format(pt,testset)
-    data_loaders = [LANRO(test_instructions, None, "language"), LANRO(test_actions, None, "actions"),  LANRO(test_images, None, "front RGB")]
-    data = {}
-    for idx, loader in enumerate(data_loaders):
-        data["mod_{}".format(idx + 1)] = {}
-        d = loader.get_data()[::subsample]
-        data["mod_{}".format(idx+1)]["data"] = d
-        data["mod_{}".format(idx + 1)]["masks"] = None
-        if loader.has_masks:
-            if len(d.shape) == 3:
-                data["mod_{}".format(idx + 1)] = {"data": d[:,:,:-1], "masks": d[:,:,-1].bool()}
-            elif len(d.shape) == 4:
-                data["mod_{}".format(idx + 1)] = {"data": d[:,:,:, :-1], "masks": d[:,:,0,-1].squeeze().bool()}
-    mods = copy.deepcopy(data)
-    mods[get_mod_idx("actions")]["data"] = None
-    mods[get_mod_idx("actions")]["masks"] = None
-    correct_objects = load_pickle(correct_objects)[::subsample]
-    joints_gt = load_pickle(joints)[::subsample]
-    return mods, data, test_shapes, test_objects, correct_objects, joints_gt
+def check_posdiff_enough(instruction, init_pos, final_pos):
+    correct = False
+    zdiff = abs(final_pos[-1] - init_pos[-1])
+    distance = None
+    if "right" in instruction:
+        if final_pos[1] - init_pos[1] > 0.2 and zdiff < 0.1:
+            correct = True
+    elif "left" in instruction:
+        if init_pos[1] - final_pos[1] > 0.2 and zdiff < 0.1:
+            correct = True
+    elif "lift" in instruction:
+        if zdiff > 0.07:
+            correct = True
+    elif "reach" in instruction:
+        distance = sum(abs(np.array(final_pos) - np.array((robot_pose())[:3])))
+        if sum(abs(np.array(final_pos) - np.array((robot_pose())[:3]))) < 0.06:
+            correct = True
+    elif instruction == "put in":
+        if sum(abs(np.array(final_pos)-np.array(drawer_pos()))) < 0.19:
+            correct = True
+    elif instruction == "close drawer":
+        if sum(abs(np.array(final_pos)-np.array(drawer_pos()))) < 0.19 and sum(abs(np.array(init_pos)-np.array(handle_pos()))) > 0.1:
+            correct = True
+    return correct, distance
 
-def spawn_objects(objs, idx):
-    num_objs = [0, 1, 1, 4, 4]
-    for x in range(num_objs[level]):
-        env.env.env.env.sim.remove_body("o{}".format(x))
-    obs, info = env.reset()
-    for x in range(num_objs[level]):
-        make_object(shapes[idx][x], objs[x], "o{}".format(x))
+def empty_steps(num):
+    for x in range(num):
+         env.step(list(robot_pose()) +  list(env.env.env.env.robot.default_arm_orn_RPY) + [1])
 
-def get_gripper_pos():
-    return env.env.env.env.robot.sim.bclient.getLinkState(0, 11)[0] + \
-        env.env.env.env.robot.sim.bclient.getLinkState(0, 11)[1]
+def get_instruction_action(setup):
+    if setup[2] == "a":
+        action_in = instruction = "reach"
+    elif setup[2] == "b":
+        action_in = instruction = "lift"
+    elif setup[2] == "c":
+        action_in = instruction = "put in"
+    else:
+        action_in = instruction = "close drawer"     
+    return action_in, instruction
 
-def get_obj_index(obj_name):
-    return env.env.env.env.sim.get_object_id(obj_name)
+def infer_loop(setup, infer_model):
+        global robot_pos
+        global robot_joint
+        robot_pos = []
+        robot_joint = []
+        drawer_pos = None
+        env.reset()
+        if setup[1] == "9":
+            env.env.env.env.sim.set_base_pose("panda", [-0.6,random.uniform(-0.2,0.2),0], (0.0, 0.0, 0.0, 1.0))
+        objects = random.sample(OBJECTS, SCENES[setup[-1]])
+        if (int(setup[1]) > 6 and setup[2] in ["c","d"]):
+            objects = [objects[0]]
+        targetobject = random.choice(objects)
+        drawer = True if (int(setup[1]) > 6 and setup[2] in ["c","d"]) else False
+        o_ids, targetobj_id, drawer_id = setup_scene(objects, targetobject, env, drawer)
+        empty_steps(5)
+        if drawer:
+            init_handle_pos = handle_pos()
+        image = env.env.env.env.robot.get_camera_img()
+        image = cv2.resize(image, (64,64))
+        if int(setup[1]) < 7:
+            action_in = SCENES[setup[1]]
+            if isinstance(action_in, list):
+                action_in = random.choice(action_in)
+            obj_in = " ".join(["the", targetobject]) if setup[-1] not in ["a", "b"] else ""
+            instruction = " ".join([action_in, obj_in]).strip()
+        else:
+                action_in, instruction = get_instruction_action(setup)
+        #env.env.env.env.sim.bclient.addUserDebugText(setup + " " + instruction, [0.15, -.3, .6], textSize=2.0, replaceItemUniqueId=43)
+        init_obj_pos = object_pos(targetobj_id)
+
+
+        mods_batch = {}
+        if int(setup[1]) in [4,5] or (int(setup[1])<7 and setup[2] in ["c", "d"]):
+            mods_batch["mod_1"] = {"data": preprocess_instruction(instruction), "masks":None}
+            mods_batch["mod_2"] = {"data": None, "masks":None}
+            mods_batch["mod_3"] = {"data": torch.tensor(image/255).reshape(3,64,64).unsqueeze(0).float(), "masks":None}
+        else:
+            mods_batch["mod_1"] = {"data": None, "masks":None}
+            mods_batch["mod_2"] = {"data": torch.tensor(image/255).reshape(3,64,64).unsqueeze(0).float(), "masks":None}
+        output = infer_model.model.model.forward(cast_dict_to_cuda(mods_batch))
+        actions = process_model_output(output, "actions")
+        min_distance = None
+        for i, pose in enumerate(actions[0][:70]):
+                gripper = 1
+                if pose[-1] < -0.5:
+                    gripper = -1
+                make_step([float(p) for p in pose[:-1]] + [gripper])
+                if drawer:
+                    init_obj_pos = init_handle_pos
+                correct, distance = check_posdiff_enough(instruction, init_obj_pos, object_pos(targetobj_id))
+                if min_distance is None and "reach" in instruction:
+                    min_distance = distance
+                elif "reach" in instruction and distance < min_distance:
+                    min_distance = distance
+                if correct:
+                    if "drawer" in instruction:
+                        manual_drawer_closed(drawer_id)
+                    break
+        if "put" in instruction:
+               empty_steps(15)
+               correct, dist = check_posdiff_enough(instruction, init_obj_pos, object_pos(targetobj_id))
+        for x in o_ids:
+            env.env.env.env.sim.remove_body(x)
+        if not correct:
+            return False, min_distance
+        else:
+            print("Correct")
+            return True, min_distance
+
+def load_vocab(pth):
+    vocab = []
+    with open(pth, "r") as f:
+        for line in f:
+                vocab.append(line.replace("\n", ""))
+    return vocab
+
+def preprocess_instruction(instruction):
+    indices = [vocab.index(s) for s in instruction.split(" ")]
+    data = torch.nn.functional.one_hot(torch.tensor(np.array(indices)), num_classes=9)
+    return data.unsqueeze(0)
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-p", "--model", type=str, help="path to the .ckpt model file. Relative or absolute")
-    parser.add_argument("-s", "--subsample", type=int, help="use every nth trial of the 1200 test trials", default=1)
-    parser.add_argument("-d", "--dataset", type=int, help="number of the dataset used for training (1-4)")
-    args = parser.parse_args()
-    model_ckpts = [args.model]
+    model_ckpts = glob.glob("")
     for model_ckpt in model_ckpts:
         print(model_ckpt)
-        try:
+        if not os.path.exists(os.path.join(os.path.dirname(model_ckpt), 'success_percentage.txt')):
             model_cfg = (os.path.dirname(os.path.dirname(model_ckpt)) + "/config.yml")
-            testset = "testset"
-            subsample = args.subsample
-            level = args.dataset
-            render = False
-            show_ground_truth = False
-
-            levels = ["lanro_ycb/level1/", "lanro_ycb/level2/", "lanro_ycb/level3/", "lanro_ycb/"]
-            pt = "./data/{}".format(levels[level - 1])
+            task = model_ckpt.split("/")[-4].split("_")[0]
+            render = True
             infer_model = MultimodalVAEInfer(model_ckpt, model_cfg)
-            #data, labels = infer_model.datamodule.get_num_samples(10, split="val")
-            mods, data, test_shapes, test_objects, correct_objects, joints_gt = load_testdata()
-            cor_obs_cats = {"mug":0, "toothpaste":0, "stapler":0, "lemon":0, "teabox":0, "soap":0}
-            cor_actions = {"lift": 0, "left":0, "right":0}
-            cor_obs_toothpaste = []
-            correctly_selected_objects = []
-            correctly_moved = []
-            correctly_moved_and_selected = []
-            failed_gt = []
-            env = gym.make("PandaNLReach2-v0", action_type= "end_effector", render=render)
-            env.test_only = True
-            # inference
-            r = int(1200/(subsample*10)) if subsample <= 5 else 1
-            actions_gt = postprocess_data(data, get_mod_idx("actions"))
-            language_gt = postprocess_data(data, get_mod_idx("language"))
-            # objects_gt = postprocess_data(data, get_mod_idx("objects"))
-            objects_gt = load_pickle(test_objects)[::subsample]
-            shapes = load_pickle(test_shapes)[::subsample]
-            rgb_gt = postprocess_data(data, get_mod_idx("front RGB"))
-            for batch in range(r):
-                print("BATCH", batch)
-                if subsample > 5:
-                    mods_batch = mods
+            success = []
+            min_distances = []
+            env = gym.make("PandaEmpty-v0", render=render)
+            vocab = load_vocab("./data/lanro_long/D6a/vocab.txt")
+            for x in range(500):
+                if x % 20 == 0:
+                    print(x)
+                    env.close()
+                    env = gym.make("PandaEmpty-v0", render=render)
+                env.reset()
+                succ, min_distance = infer_loop(task, infer_model)
+                min_distances.append(min_distance)
+                if succ:
+                    success.append(1)
                 else:
-                    mods_batch = {}
-                    for k, val in mods.items():
-                        mods_batch[k] = {"data": None, "masks":None}
-                        if val["data"] is not None:
-                            mods_batch[k]["data"] = val["data"][batch * 10:(batch * 10 + 10)]
-                        if val["masks"] is not None:
-                            mods_batch[k]["masks"] = val["masks"][batch*10:(batch*10+10)]
-                output = infer_model.model.model.forward(cast_dict_to_cuda(mods_batch))
-                actions = process_model_output(output, "actions")
-                for i, trial in enumerate(actions):
-                    #print(i)
-                    idx = 0 if subsample > 5 else (batch*10)
-                    sel = 0
-                    correct_object = ["o0", "o1", "o2", "o3", "o4"][correct_objects[idx+i]]
-                    remove_obj_keys = [key for key in env.sim._bodies_idx.keys() if 'object' in key]
-                    for _key in remove_obj_keys:
-                         env.sim.remove_body(_key)
-                    spawn_objects(objects_gt[idx+i][0], idx+i)
-                    # im = cv2.cvtColor(rgb_gt[i], cv2.COLOR_BGR2RGB)
-                    # cv2.imshow("SCENE", im)
-                    # cv2.waitKey(3)
-                    env.env.env.env.sim.bclient.addUserDebugText(language_gt[idx+i], [0.05, -.3, .4], textSize=2.0, replaceItemUniqueId=43)
-                    if show_ground_truth:
-                        env.env.env.env.sim.bclient.addUserDebugText("ground truth" , [0.05, 0.3, .6], textSize=2.0, replaceItemUniqueId=53)
-                        if actions_gt is not None:
-                            for action in joints_gt[idx+i]:
-                                aa = list(action.squeeze().detach().cpu())
-                                ac = np.asarray(aa)
-                                env.step(ac)
-                            spawn_objects(objects_gt[idx+i][0], idx+i)
-                    magnetized = None
-                    env.env.env.env.sim.bclient.addUserDebugText("inference" , [0.05, 0.3, .6], textSize=2.0, replaceItemUniqueId=53)
-                    for action in trial:
-                        aa = list(action.squeeze())
-                        ac = np.asarray(aa)
-                        env.step(ac)
-                        if get_gripper_pos()[:3][-1] <= 0.2 and magnetized is None:
-                            for o in ["o0", "o1", "o2", "o3"][:np.max(correct_objects)+1]:
-                                if np.linalg.norm(
-                                        np.asarray(get_gripper_pos()[:3]) - np.asarray(env.env.env.env.sim.get_base_position(o))) <= 0.10:
-                                    if o == correct_object:
-                                        sel = 1
-                                        if level > 2:
-                                            cor_obs_cats[language_gt[idx+i].split(" ")[-1]] += 1
-                                        # posg = list(get_gripper_pos()[:3])
-                                        # posg[-1] = posg[-1] - 0.03
-                                        # env.env.env.env.sim.set_base_pose(o, posg, [0, 0, 0, 1])
-                        if magnetized is not None:
-                                p.changeConstraint(magnetized, get_gripper_pos()[:3], get_gripper_pos()[3:])
-                    if "left" in language_gt[idx+i]:
-                        if (env.env.env.env.sim.get_base_position(correct_object)[1] -
-                                     objects_gt[idx+i][0][int(correct_object[-1]) - 1][1]) < -0.3:
-                            correctly_moved.append(1)
-                            #print("CORRECT LEFT")
-                            c = 1
-                            cor_actions["left"] += 1
-                        else:
-                            c = 0
-                            correctly_moved.append(0)
-                    elif "right" in language_gt[idx+i]:
-                        if (env.env.env.env.sim.get_base_position(correct_object)[1] -
-                                     objects_gt[idx+i][0][int(correct_object[-1]) - 1][1]) > 0.3:
-                            correctly_moved.append(1)
-                            #print("CORRECT RIGHT")
-                            cor_actions["right"] += 1
-                            c = 1
-                        else:
-                            c = 0
-                            correctly_moved.append(0)
-                    else:
-                        t1 =  (env.env.env.env.sim.get_base_position(correct_object)[1] -
-                                     objects_gt[idx+i][0][int(correct_object[-1]) - 1][1]) > 0.3
-                        t2 = (env.env.env.env.sim.get_base_position(correct_object)[1] -
-                                     objects_gt[idx+i][0][int(correct_object[-1]) - 1][1]) < -0.3
-                        if (env.env.env.env.sim.get_base_position(correct_object)[2] -
-                                     objects_gt[idx+i][0][int(correct_object[-1]) - 1][2]) > 0.04 and not t1 and not t2:
-                            correctly_moved.append(1)
-                            # print(env.env.env.env.sim.get_base_position(correct_object)[1])
-                            # print(objects_gt[i][0][int(correct_object[-1]) - 1][1])
-                            #print("CORRECT LIFT")
-                            cor_actions["lift"] += 1
-                            c = 1
-                        else:
-                            correctly_moved.append(0)
-                            c = 0
-                    correctly_selected_objects.append(sel)
-                    #if sel == 1:
-                        #print("Correctly selected", o)
-                    if sel == 1 and c == 1:
-                        correctly_moved_and_selected.append(1)
-                    else:
-                        correctly_moved_and_selected.append(0)
-                    if batch % 10 == 0 and batch > 0:
-                        env.close()
-                        env = gym.make("PandaNLReach2-v0", action_type="end_effector", render=render)
-                        env.test_only = True
+                    success.append(0)
+            succ = (sum(success)/len(success))*100
+            print(model_ckpt)
+            print("Success percentage: {}".format(succ))
+            with open(os.path.join(os.path.dirname(model_ckpt), 'success_percentage.txt'), 'w') as f:
+                 f.write(str(succ))
             env.close()
-            print(model_ckpt)
-            print("Correctly selected:")
-            print("{}/{}, that is {}%".format(sum(correctly_selected_objects),len(correctly_selected_objects), sum(correctly_selected_objects)*100/len(correctly_selected_objects)))
-            print("Correctly moved:")
-            print("{}/{}, that is {}%".format(sum(correctly_moved), len(correctly_moved), sum(correctly_moved)*100/len(correctly_moved)))
-            print("Correctly moved and selected:")
-            print("{}/{}, that is {}%".format(sum(correctly_moved_and_selected), len(correctly_moved_and_selected), sum(correctly_moved_and_selected)*100/len(correctly_moved_and_selected)))
-            print(cor_obs_cats)
-            n_a = int(len(correctly_selected_objects)/ 3) if level != 3 else len(correctly_selected_objects)
-            if level != 3:
-                print("lift: {} move left: {} move right: {}".format(cor_actions["lift"]/n_a, cor_actions["left"]/n_a, cor_actions["right"]/n_a))
-            if len(correctly_selected_objects) > 100:
-                with open(os.path.join(os.path.dirname(model_ckpt), 'stats_no_magnet.txt'), 'w') as f:
-                        f.write("Correctly selected: \n")
-                        f.write("{}/{}, that is {}% \n".format(sum(correctly_selected_objects),len(correctly_selected_objects), sum(correctly_selected_objects)*100/len(correctly_selected_objects)))
-                        f.write("Correctly moved:\n")
-                        f.write("{}/{}, that is {}%\n".format(sum(correctly_moved), len(correctly_moved), sum(correctly_moved)*100/len(correctly_moved)))
-                        f.write("Correctly moved and selected:\n")
-                        f.write("{}/{}, that is {}%\n".format(sum(correctly_moved_and_selected), len(correctly_moved_and_selected), sum(correctly_moved_and_selected)*100/len(correctly_moved_and_selected)))
-                        if level > 2:
-                            f.write("Objects:\n")
-                            f.write("mug: {} toothpaste: {} stapler: {} lemon: {} teabox: {} soap: {}\n".format(cor_obs_cats["mug"], cor_obs_cats["toothpaste"], cor_obs_cats["stapler"], cor_obs_cats["lemon"], cor_obs_cats["teabox"], cor_obs_cats["soap"]))
-                        if level != 3:
-                            f.write("Actions:\n")
-                            f.write("lift: {} move left: {} move right: {}".format(cor_actions["lift"]/n_a, cor_actions["left"]/n_a, cor_actions["right"]/n_a))
-        except NameError as e:
-            print(str(e))
-            print(model_ckpt)
-        except RuntimeError as e:
-            print(str(e))
-            print(model_ckpt)

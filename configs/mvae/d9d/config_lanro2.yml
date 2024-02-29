@@ -1,0 +1,38 @@
+batch_size: 128
+beta: 1
+dataset_name: lanrol1
+epochs: 400
+exp_name: d9d_poe_gaussian
+iterseeds: 1
+labels: null
+lr: 1e-3
+mixing: poe
+modality_1:
+  decoder: Transformer
+  encoder: Transformer
+  growtype: neurons
+  llik_scaling: 1
+  mod_type: actions
+  path: ./data/lanro/D9d/endeff_actions_final.pkl
+  prior: normal
+  private_latents: null
+  recon_loss: optimal_sigma
+  test_datapath: null
+modality_2:
+  decoder: CNN
+  encoder: CNN
+  growtype: neurons
+  llik_scaling: 1
+  mod_type: front RGB
+  path: ./data/lanro/D9d/image_final.pkl
+  prior: normal
+  private_latents: null
+  recon_loss: optimal_sigma
+  test_datapath: null
+n_latents: 32
+obj: elbo
+optimizer: adam
+pre_trained: null
+seed: 2
+test_split: 0.1
+viz_freq: 50

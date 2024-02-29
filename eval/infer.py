@@ -77,4 +77,4 @@ if __name__ == "__main__":
     parser.add_argument("-p", "--mpath", type=str, help="path to the .ckpt model file. Relative or absolute")
     args = parser.parse_args()
     cl = MultimodalVAEInfer(args.mpath, "/home/gabi/Desktop/LANRO/lanro_all_gaussiannll_6mods_simpler2/config.yml")
-    #cl.eval_statistics()
+    cl.eval_statistics()

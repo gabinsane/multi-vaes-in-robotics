@@ -145,6 +145,17 @@ class TaskObject:
         elif self.shape == SHAPES.LEMON:
             id = self.sim.loadURDF(body_name=object_body_key,
                                    fileName=".{}/lanro_gym/objects_urdfs/lemon.urdf".format(cw))
+        elif self.shape == SHAPES.NOTHING:
+            self.sim.create_cylinder(
+                body_name=object_body_key,
+                radius=0.0000001,
+                height=0.0000001,
+                mass=0.0000001,
+                position=[0.0, 0.0, 0],
+                rgba_color=self.color.value[0] + [0],
+                lateral_friction=1.0,
+                spinning_friction=0.005,
+            )
         elif self.shape == SHAPES.TOOTHPASTE:
             id = self.sim.loadURDF(body_name=object_body_key,
                                    fileName=".{}/lanro_gym/objects_urdfs/toothpaste.urdf".format(cw))

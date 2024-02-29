@@ -58,6 +58,7 @@ class PyBulletRobot:
             'absolute_rpy': self.absolute_rpy_step,
             'relative_rpy': self.relative_rpy_step,
             'end_effector': self.end_effector_step,
+            'end_effector_rot': self.end_effector_step
         }
         with self.sim.no_rendering():
             self._load_robot(file_name, base_position, base_orientation, **kwargs)
@@ -136,6 +137,9 @@ class PyBulletRobot:
         # XYZ relative end-effector change in position
         if self.action_type == 'end_effector':
             action_high = np.array([1] * 3)
+            action_low = -action_high.copy()
+        elif self.action_type == 'end_effector_rot':
+            action_high = np.array([1] * 7)
             action_low = -action_high.copy()
         # relative joint change
         elif self.action_type == 'relative_joints':
@@ -234,12 +238,30 @@ class PyBulletRobot:
         """apply absolute values to the joints"""
         self.goto_joint_poses(action, gripper)
 
+    def update_position_pid(self, current_position, desired_position, max_position_change):
+        # Calculate the vector from current position to desired position
+        error_vector = [desired_position[i] - current_position[i] for i in range(len(current_position))]
+
+        # Calculate the proportional control term
+        proportional_term = [np.clip(error_vector[i], -max_position_change, max_position_change) for i in range(len(error_vector))]
+        
+        # Update the current position based on the proportional control term
+        updated_position = [current_position[i] + proportional_term[i] for i in range(len(current_position))]
+
+        return updated_position
+
     def end_effector_step(self, action, gripper):
-        assert len(action) == 3
+        #assert len(action) == 3
+        orn = None
+        if len(action) == 7:
+            orn = action[3:]
+            action = action[:3]
         ee_ctrl = action * self.max_joint_change
         ee_position = self.get_ee_position()
         ee_target_position = ee_position + ee_ctrl
-        self.goto(ee_target_position, self.default_arm_orn_RPY, gripper)
+        desired_pose = self.update_position_pid(ee_position, action, self.max_joint_change)
+        orn = orn if orn is not None else self.default_arm_orn_RPY
+        self.goto(desired_pose, orn, gripper)
 
     def goto(self, pos=None, orn=None, gripper=None) -> None:
         ''' Uses PyBullet IK to solve for desired joint angles '''

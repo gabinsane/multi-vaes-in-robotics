@@ -1,0 +1,359 @@
+cfg: !!python/object:models.config_cls.Config
+  K: 1
+  batch_size: 32
+  beta: 1
+  dataset_name: lanro
+  epochs: 200
+  eval_only: false
+  exp_name: lanro_mvae_d1
+  iterseeds: 1
+  labels: null
+  labels_test: null
+  lr: 1e-3
+  mPath: results/lanro_mvae_d1/version_0
+  mixing: poe
+  modality_1: &id001
+    decoder: TxtTransformer
+    encoder: TxtTransformer
+    growtype: neurons
+    llik_scaling: 1
+    mod_type: language
+    path: ./data/lanro/D1/lanro_instructions.pkl
+    prior: normal
+    private_latents: null
+    recon_loss: gaussian_nll
+    test_datapath: null
+  modality_2: &id002
+    decoder: Transformer
+    encoder: Transformer
+    growtype: neurons
+    llik_scaling: 1
+    mod_type: actions
+    path: ./data/lanro/D1/lanro_actions.pkl
+    prior: normal
+    private_latents: null
+    recon_loss: gaussian_nll
+    test_datapath: null
+  modality_3: &id003
+    decoder: CNN
+    encoder: RESCNN
+    growtype: neurons
+    llik_scaling: 1
+    mod_type: front RGB
+    path: ./data/lanro/D1/lanro_images.pkl
+    prior: normal
+    private_latents: null
+    recon_loss: gaussian_nll
+    test_datapath: null
+  model_cfg: {}
+  mods:
+  - *id001
+  - *id002
+  - *id003
+  n_latents: 64
+  num_mods: null
+  obj: elbo
+  optimizer: adam
+  params:
+    batch_size: 32
+    beta: 1
+    dataset_name: lanro
+    epochs: 200
+    exp_name: lanro_mvae_d1
+    iterseeds: 1
+    labels: null
+    lr: 1e-3
+    mixing: poe
+    modality_1: *id001
+    modality_2: *id002
+    modality_3: *id003
+    n_latents: 64
+    obj: elbo
+    optimizer: adam
+    pre_trained: null
+    seed: 2
+    test_split: 0.1
+    viz_freq: 100
+  parser: !!python/object:argparse.ArgumentParser
+    _action_groups:
+    - &id027 !!python/object:argparse._ArgumentGroup
+      _action_groups: []
+      _actions: &id004
+      - &id005 !!python/object:argparse._HelpAction
+        choices: null
+        const: null
+        container: &id006 !!python/object:argparse._ArgumentGroup
+          _action_groups: []
+          _actions: *id004
+          _defaults: &id021 {}
+          _group_actions:
+          - *id005
+          - &id010 !!python/object:argparse._StoreAction
+            choices: null
+            const: null
+            container: *id006
+            default: null
+            dest: cfg
+            help: Specify config file
+            metavar: FILE
+            nargs: null
+            option_strings:
+            - -c
+            - --cfg
+            required: false
+            type: null
+          - &id017 !!python/object:argparse._StoreAction
+            choices: null
+            const: null
+            container: *id006
+            default: 32
+            dest: precision
+            help: 'Value for mixed precision training. Allowed values: 64, 32, 16,
+              bf16'
+            metavar: null
+            nargs: null
+            option_strings:
+            - -p
+            - --precision
+            required: false
+            type: &id008 !!python/name:builtins.str ''
+          - &id019 !!python/object:argparse._StoreAction
+            choices: null
+            const: null
+            container: *id006
+            default: null
+            dest: viz_freq
+            help: frequency of visualization savings (number of iterations)
+            metavar: null
+            nargs: null
+            option_strings:
+            - --viz_freq
+            required: false
+            type: &id007 !!python/name:builtins.int ''
+          - &id009 !!python/object:argparse._StoreAction
+            choices: null
+            const: null
+            container: *id006
+            default: null
+            dest: batch_size
+            help: Size of the training batch
+            metavar: null
+            nargs: null
+            option_strings:
+            - --batch_size
+            required: false
+            type: *id007
+          - &id014 !!python/object:argparse._StoreAction
+            choices: null
+            const: null
+            container: *id006
+            default: null
+            dest: obj
+            help: objective to use (moe_elbo/poe_elbo_semi)
+            metavar: O
+            nargs: null
+            option_strings:
+            - --obj
+            required: false
+            type: *id008
+          - &id012 !!python/object:argparse._StoreAction
+            choices: null
+            const: null
+            container: *id006
+            default: null
+            dest: loss
+            help: loss to use (lprob/bce)
+            metavar: O
+            nargs: null
+            option_strings:
+            - --loss
+            required: false
+            type: *id008
+          - &id013 !!python/object:argparse._StoreAction
+            choices: null
+            const: null
+            container: *id006
+            default: null
+            dest: n_latents
+            help: latent vector dimensionality
+            metavar: null
+            nargs: null
+            option_strings:
+            - --n_latents
+            required: false
+            type: *id007
+          - &id016 !!python/object:argparse._StoreAction
+            choices: null
+            const: null
+            container: *id006
+            default: null
+            dest: pre_trained
+            help: path to pre-trained model (train from scratch if empty)
+            metavar: null
+            nargs: null
+            option_strings:
+            - --pre_trained
+            required: false
+            type: *id008
+          - &id018 !!python/object:argparse._StoreAction
+            choices: null
+            const: null
+            container: *id006
+            default: null
+            dest: seed
+            help: seed number
+            metavar: S
+            nargs: null
+            option_strings:
+            - --seed
+            required: false
+            type: *id007
+          - &id011 !!python/object:argparse._StoreAction
+            choices: null
+            const: null
+            container: *id006
+            default: null
+            dest: exp_name
+            help: name of folder
+            metavar: null
+            nargs: null
+            option_strings:
+            - --exp_name
+            required: false
+            type: *id008
+          - &id015 !!python/object:argparse._StoreAction
+            choices: null
+            const: null
+            container: *id006
+            default: null
+            dest: optimizer
+            help: optimizer
+            metavar: null
+            nargs: null
+            option_strings:
+            - --optimizer
+            required: false
+            type: *id008
+          _has_negative_number_optionals: &id022 []
+          _mutually_exclusive_groups: &id023 []
+          _negative_number_matcher: &id024 !!python/object/apply:re._compile
+          - ^-\d+$|^-\d*\.\d+$
+          - 32
+          _option_string_actions: &id025
+            --batch_size: *id009
+            --cfg: *id010
+            --exp_name: *id011
+            --help: *id005
+            --loss: *id012
+            --n_latents: *id013
+            --obj: *id014
+            --optimizer: *id015
+            --pre_trained: *id016
+            --precision: *id017
+            --seed: *id018
+            --viz_freq: *id019
+            -c: *id010
+            -h: *id005
+            -p: *id017
+          _registries: &id026
+            action:
+              null: &id020 !!python/name:argparse._StoreAction ''
+              store: *id020
+              store_const: !!python/name:argparse._StoreConstAction ''
+              store_true: !!python/name:argparse._StoreTrueAction ''
+              store_false: !!python/name:argparse._StoreFalseAction ''
+              append: !!python/name:argparse._AppendAction ''
+              append_const: !!python/name:argparse._AppendConstAction ''
+              count: !!python/name:argparse._CountAction ''
+              help: !!python/name:argparse._HelpAction ''
+              version: !!python/name:argparse._VersionAction ''
+              parsers: !!python/name:argparse._SubParsersAction ''
+              extend: !!python/name:argparse._ExtendAction ''
+            type:
+              null: !!python/name:argparse.identity ''
+          argument_default: null
+          conflict_handler: error
+          description: null
+          prefix_chars: '-'
+          title: optional arguments
+        default: ==SUPPRESS==
+        dest: help
+        help: show this help message and exit
+        metavar: null
+        nargs: 0
+        option_strings:
+        - -h
+        - --help
+        required: false
+        type: null
+      - *id010
+      - *id017
+      - *id019
+      - *id009
+      - *id014
+      - *id012
+      - *id013
+      - *id016
+      - *id018
+      - *id011
+      - *id015
+      _defaults: *id021
+      _group_actions: []
+      _has_negative_number_optionals: *id022
+      _mutually_exclusive_groups: *id023
+      _negative_number_matcher: *id024
+      _option_string_actions: *id025
+      _registries: *id026
+      argument_default: null
+      conflict_handler: error
+      description: null
+      prefix_chars: '-'
+      title: positional arguments
+    - *id006
+    _actions: *id004
+    _defaults: *id021
+    _has_negative_number_optionals: *id022
+    _mutually_exclusive_groups: *id023
+    _negative_number_matcher: *id024
+    _option_string_actions: *id025
+    _optionals: *id006
+    _positionals: *id027
+    _registries: *id026
+    _subparsers: null
+    add_help: true
+    allow_abbrev: true
+    argument_default: null
+    conflict_handler: error
+    description: null
+    epilog: null
+    formatter_class: !!python/name:argparse.HelpFormatter ''
+    fromfile_prefix_chars: null
+    prefix_chars: '-'
+    prog: main.py
+    usage: null
+  pre_trained: null
+  seed: 2
+  test_split: 0.1
+  viz_freq: 100
+feature_dims:
+  actions:
+  - 100
+  - 4
+  - 1
+  colors:
+  - 2
+  - 6
+  front RGB:
+  - 64
+  - 64
+  - 3
+  language:
+  - 4
+  - 9
+  - 1
+  objects:
+  - 2
+  - 3
+  shapes:
+  - 2
+  - 6

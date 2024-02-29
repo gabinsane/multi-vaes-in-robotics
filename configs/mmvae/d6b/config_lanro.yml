@@ -1,0 +1,38 @@
+batch_size: 256
+beta: 1
+dataset_name: lanrol1
+epochs: 400
+exp_name: d6b_moedreg_mse
+iterseeds: 1
+labels: null
+lr: 1e-3
+mixing: moe
+modality_1:
+  decoder: Transformer
+  encoder: Transformer
+  growtype: neurons
+  llik_scaling: 1
+  mod_type: actions
+  path: ./data/lanro/D6b/endeff_actions_final.pkl
+  prior: normal
+  private_latents: null
+  recon_loss: mse
+  test_datapath: null
+modality_2:
+  decoder: CNN
+  encoder: CNN
+  growtype: neurons
+  llik_scaling: 1
+  mod_type: front RGB
+  path: ./data/lanro/D6b/image_final.pkl
+  prior: normal
+  private_latents: null
+  recon_loss: mse
+  test_datapath: null
+n_latents: 32
+obj: dreg
+optimizer: adam
+pre_trained: null
+seed: 2
+test_split: 0.1
+viz_freq: 50

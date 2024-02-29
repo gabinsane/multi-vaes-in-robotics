@@ -1,12 +1,17 @@
 import torch
 import cv2, os
 import numpy as np
-import math
+import math, copy
+import wget
+from utils import one_hot_encode, output_onehot2text, lengths_to_mask, turn_text2image, load_data, add_recon_title
 import pickle
-from utils import one_hot_encode, lengths_to_mask, turn_text2image, load_data, add_recon_title, one_hot_encode_words, seq2words
+from utils import one_hot_encode, output_onehot2text, lengths_to_mask, turn_text2image, load_data, add_recon_title, one_hot_encode_words, seq2words
 from torchvision.utils import make_grid
+from eval.eval_sprites import eval_single_model as sprites_eval
+from eval.eval_cdsprites import eval_single_model as cdsprites_eval
+import imageio
 from itertools import compress
-
+import torchvision
 
 class BaseDataset():
     """
@@ -28,6 +33,7 @@ class BaseDataset():
         self.mod_type = mod_type
         self.has_masks = False
         self.categorical = False
+        self.forbidden_subsets = []
 
     def _mod_specific_loaders(self):
         """
@@ -200,11 +206,684 @@ class BaseDataset():
 
 
 # ----- Multimodal Datasets ---------
+
+class CDSPRITESPLUS(BaseDataset):
+    feature_dims = {"image": [64, 64, 3],
+                    "text": [45, 27, 1]
+                    }  # these feature_dims are also used by the encoder and decoder networks
+
+    def __init__(self, pth, testpth, mod_type):
+        super().__init__(pth, testpth, mod_type)
+        self.mod_type = mod_type
+        self.set_vis_image_shape()
+
+    def set_vis_image_shape(self):
+        width = 192
+        if "level1" in self.path:
+            width = 70
+        elif "level2" in self.path:
+            width = 120
+        self.text2img_size = (64,width,3)
+
+    def labels(self):
+        """
+        Extract text labels based on the dataset level
+        :return: list of labels as strings
+        :rtype: list
+        """
+        labels = [x.decode("utf8") for x in self.get_data_raw()["text"]]
+        if "level2" in self.path:
+            labels = [[x.split(" ")[0], x.split(" ")[1]] for x in labels]
+        if "level3" in self.path:
+            labels = [[x.split(" ")[0], x.split(" ")[1], x.split(" ")[2]] for x in labels]
+        if "level4" in self.path:
+            labels = [[x.split(" ")[0], x.split(" ")[1], x.split(" ")[2], " ".join(x.split(" ")[3:6])] for x in labels]
+        if "level5" in self.path:
+            labels = [[x.split(" ")[0], x.split(" ")[1], x.split(" ")[2], " ".join(x.split(" ")[3:6]),
+                       " ".join(x.split(" ")[6:])] for x in labels]
+        return labels
+
+    def eval_statistics_fn(self):
+        return cdsprites_eval
+
+    def _mod_specific_loaders(self):
+        return {"image": self._preprocess_images, "text": self._preprocess_text}
+
+    def _mod_specific_savers(self):
+        return {"image": self._postprocess_images, "text": self._postprocess_text}
+
+    def _preprocess_images(self):
+        d = self.get_data_raw()["image"][:].reshape(-1, *[self.feature_dims["image"][i] for i in [2,0,1]])
+        data = torch.tensor(d)/255
+        return data
+
+    def _postprocess_images(self, data):
+        if isinstance(data, dict):
+            data = data["data"]
+        return np.asarray(data.detach().cpu())*255
+
+    def _postprocess_text(self, data):
+        if isinstance(data, dict):
+            masks = data["masks"]
+            data = data["data"]
+            text = output_onehot2text(data)
+            if masks is not None:
+                masks = torch.count_nonzero(masks, dim=-1)
+                text = [x[:masks[i]] for i, x in enumerate(text)]
+            return text
+        else:
+            return output_onehot2text(data)
+
+    def _preprocess_text(self):
+        d = self.get_data_raw()["text"]
+        self.has_masks = True
+        self.categorical = True
+        data = [one_hot_encode(len(f), f.decode("utf8")) for f in d]
+        data = [torch.from_numpy(np.asarray(x)) for x in data]
+        masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
+        data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0.0)
+        data_and_masks = torch.cat((data, masks), dim=-1)
+        return data_and_masks
+
+    def save_recons(self, data, recons, path, mod_names):
+        output_processed = self._postprocess_all2img(recons)
+        outs = add_recon_title(output_processed, "output\n{}".format(self.mod_type), (0, 170, 0))
+        input_processed = []
+        for key, d in data.items():
+            output = self._mod_specific_savers()[mod_names[key]](d)
+            images = turn_text2image(output, img_size=self.text2img_size) if mod_names[key] == "text" \
+                else np.reshape(output,(-1,*self.feature_dims["image"]))
+            images = add_recon_title(images, "input\n{}".format(mod_names[key]), (0, 0, 255))
+            input_processed.append(np.vstack(images))
+            input_processed.append(np.ones((np.vstack(images).shape[0], 2, 3))*125)
+        inputs = np.hstack(input_processed).astype("uint8")
+        final = np.hstack((inputs, np.vstack(outs).astype("uint8")))
+        cv2.imwrite(path, final)
+
+class CUB(BaseDataset):
+    """Dataset class for our processed version of Caltech-UCSD birds dataset. We use the original images and text
+    represented as sequences of one-hot-encodings for each character (incl. spaces)"""
+    feature_dims = {"image": [64, 64, 3],
+                    "text": [246, 27, 1]
+                    }  # these feature_dims are also used by the encoder and decoder networks
+
+    def __init__(self, pth, testpth, mod_type):
+        super().__init__(pth, testpth, mod_type)
+        self.mod_type = mod_type
+        self.text2img_size = (64,380,3)
+
+    def _preprocess_text_onehot(self):
+        """
+        General function for loading text strings and preparing them as torch one-hot encodings
+
+        :return: torch with text encodings and masks
+        :rtype: torch.tensor
+        """
+        self.has_masks = True
+        self.categorical = True
+        data = [one_hot_encode(len(f), f) for f in self.get_data_raw()]
+        data = [torch.from_numpy(np.asarray(x)) for x in data]
+        masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
+        data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0.0)
+        data_and_masks = torch.cat((data, masks), dim=-1)
+        return data_and_masks
+
+    def _postprocess_text(self, data):
+        if isinstance(data, dict):
+            masks = data["masks"]
+            data = data["data"]
+            text = output_onehot2text(data)
+            if masks is not None:
+                masks = torch.count_nonzero(masks, dim=-1)
+                text = [x[:masks[i]] for i, x in enumerate(text)]
+        else:
+            text = output_onehot2text(data)
+        for i, phrase in enumerate(text):
+            phr = phrase.split(" ")
+            newphr = copy.deepcopy(phr)
+            stringcount = 0
+            for x, w in enumerate(phr):
+                stringcount += (len(w))+1
+                if stringcount > 40:
+                    newphr.insert(x, "\n")
+                    stringcount = 0
+            text[i] = (" ".join(newphr)).replace("\n  ", "\n ")
+        return text
+
+    def labels(self):
+        """
+        No labels for T-SNAE available
+        """
+        return None
+
+    def _preprocess_text(self):
+        d = self.get_data_raw()
+        self.has_masks = True
+        self.categorical = True
+        data = [one_hot_encode(len(f), f) for f in d]
+        data = [torch.from_numpy(np.asarray(x)) for x in data]
+        masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
+        data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0.0)
+        data_and_masks = torch.cat((data, masks), dim=-1)
+        return data_and_masks
+
+    def _preprocess_images(self):
+        d = self.get_data_raw().reshape(-1, *[self.feature_dims["image"][i] for i in [2,0,1]])
+        data = torch.tensor(d)
+        return data
+
+    def _mod_specific_loaders(self):
+        return {"image": self._preprocess_images, "text": self._preprocess_text}
+
+    def _mod_specific_savers(self):
+        return {"image": self._postprocess_images, "text": self._postprocess_text}
+
+    def save_recons(self, data, recons, path, mod_names):
+        output_processed = self._postprocess_all2img(recons)
+        outs = add_recon_title(output_processed, "output\n{}".format(self.mod_type), (0, 170, 0))
+        input_processed = []
+        for key, d in data.items():
+            output = self._mod_specific_savers()[mod_names[key]](d)
+            images = turn_text2image(output, img_size=self.text2img_size) if mod_names[key] == "text" \
+                else np.reshape(output,(-1,*self.feature_dims["image"]))
+            images = add_recon_title(images, "input\n{}".format(mod_names[key]), (0, 0, 255))
+            input_processed.append(np.vstack(images))
+            input_processed.append(np.ones((np.vstack(images).shape[0], 2, 3))*125)
+        inputs = np.hstack(input_processed).astype("uint8")
+        final = np.hstack((inputs, np.vstack(outs).astype("uint8")))
+        cv2.imwrite(path, cv2.cvtColor(final, cv2.COLOR_BGR2RGB))
+
+class MNIST_SVHN(BaseDataset):
+    """Dataset class for the MNIST-SVHN bimodal dataset (can be also used for unimodal training)"""
+    feature_dims = {"mnist": [28,28,1],
+                    "svhn": [32,32,3]
+                    }  # these feature_dims are also used by the encoder and decoder networks
+
+    def __init__(self, pth, testpth, mod_type):
+        super().__init__(pth, testpth, mod_type)
+        self.mod_type = mod_type
+        self.text2img_size = (32, 32, 3)
+        self.check_indices_present()
+
+    def check_indices_present(self):
+        if not os.path.exists(self.path):
+            wget.download(os.path.join("https://data.ciirc.cvut.cz/public/groups/incognite/CdSprites/",
+                                       os.path.basename(self.path)), out=os.path.dirname(self.path))
+
+    def labels(self):
+        return self.train_labels
+
+    def _mod_specific_loaders(self):
+        return {"mnist": self._process_mnist, "svhn": self._process_svhn}
+
+    def _mod_specific_savers(self):
+        return {"mnist": self._postprocess_mnist, "svhn": self._postprocess_svhn}
+
+    def _postprocess_all2img(self, data):
+        """
+        Converts any kind of data to images to save traversal visualizations
+
+        :param data: input data
+        :type data: torch.tensor
+        :return: processed images
+        :rtype: torch.tensor
+        """
+        output_processed = self._postprocess(data)
+        return output_processed
+
+    def _postprocess_svhn(self, data):
+        if isinstance(data, dict):
+            data = data["data"]
+        images = np.asarray(data.detach().cpu().reshape(-1, 3,32,32)).transpose(0,2,3,1) * 255
+        images_res = []
+        for i in images:
+            images_res.append(cv2.resize(i, (28,28)))
+        return np.asarray(images_res)
+
+    def _postprocess_mnist(self, data):
+        if isinstance(data, dict):
+            data = data["data"]
+        images = np.asarray(data.detach().cpu()).reshape(-1,*self.feature_dims["mnist"])*255
+        images_3chan = cv2.merge((images, images, images)).squeeze(-2)
+        return images_3chan
+
+    def _process_mnist(self):
+        data = torchvision.datasets.MNIST('../data', train=True, download=True, transform=torchvision.transforms.ToTensor())
+        t_mnist = torch.load(self.path)[1::40]
+        d = data.train_data[t_mnist].unsqueeze(1)
+        self.train_labels = data.train_labels[t_mnist]
+        return d /255
+
+    def _process_svhn(self):
+        data = torchvision.datasets.SVHN('../data', download=True, split='train', transform=torchvision.transforms.ToTensor())
+        t_svhn = torch.load(self.path)[1::40]
+        d = data.data[t_svhn]
+        self.train_labels = data.labels[t_svhn]
+        return (torch.tensor(d))/255
+
+    def save_recons(self, data, recons, path, mod_names):
+        output_processed = self._postprocess(recons)
+        outs = add_recon_title(output_processed, "output\n{}".format(self.mod_type), (0, 170, 0))
+        input_processed = []
+        for key, d in data.items():
+            output = self._mod_specific_savers()[mod_names[key]](d)
+            images = add_recon_title(output, "input\n{}".format(mod_names[key]), (0, 0, 255))
+            input_processed.append(np.vstack(images))
+            input_processed.append(np.ones((np.vstack(images).shape[0], 2, 3))*125)
+        inputs = np.hstack(input_processed).astype("uint8")
+        final = np.hstack((inputs, np.vstack(outs).astype("uint8")))
+        cv2.imwrite(path, cv2.cvtColor(final, cv2.COLOR_BGR2RGB))
+
+class SPRITES(BaseDataset):
+    feature_dims = {"frames": [8,64,64,3],
+                    "attributes": [4,6],
+                    "actions": [9]
+                    }  # these feature_dims are also used by the encoder and decoder networks
+
+    def __init__(self, pth, testpth, mod_type):
+        super().__init__(pth, testpth, mod_type)
+        self.mod_type = mod_type
+        self.text2img_size = (64, 145, 3)
+        self.directions = ['front', 'left', 'right']
+        self.actions = ['walk', 'spellcard', 'slash']
+        self.label_map = ["walk front", "walk left", "walk right", "spellcard front", "spellcard left",
+                          "spellcard right", "slash front", "slash left", "slash right"]
+        self.attr_map = ["skin", "pants", "top", "hair"]
+        self.att_names = [["pink", "yellow", "grey", "silver", "beige", "brown"], ["white", "gold", "red", "armor", "blue", "green"],
+                          ["maroon", "blue", "white", "armor", "brown", "shirt"],["green", "blue", "yellow", "silver", "red", "purple"]]
+
+    def labels(self):
+        if self.current_path is None:
+            return None
+        actions = np.argmax(self.get_actions()[:, :9], axis=-1)
+        labels = []
+        for a in actions:
+            labels.append(self.label_map[int(a)])
+        return labels
+
+    def eval_statistics_fn(self):
+        return sprites_eval
+
+    def get_frames(self):
+        X_train = []
+        for act in range(len(self.actions)):
+            for i in range(len(self.directions)):
+                x = np.load(os.path.join(self.current_path, '{}_{}_frames_{}.npy'.format(self.actions[act], self.directions[i], self.current_datatype())))
+                X_train.append(x)
+        data = np.concatenate(X_train, axis=0)
+        return torch.tensor(data)
+
+    def get_attributes(self):
+        self.categorical = True
+        A_train = []
+        for act in range(len(self.actions)):
+            for i in range(len(self.directions)):
+                a = np.load(os.path.join(self.current_path, '{}_{}_attributes_{}.npy'.format(self.actions[act], self.directions[i], self.current_datatype())))
+                A_train.append(a[:, 0, :, :])
+        data = np.concatenate(A_train, axis=0)
+        return torch.tensor(data)
+
+    def get_actions(self):
+        self.categorical = True
+        D_train = []
+        for act in range(len(self.actions)):
+            for i in range(len(self.directions)):
+                a = np.load(os.path.join(self.current_path, '{}_{}_attributes_{}.npy'.format(self.actions[act], self.directions[i], self.current_datatype())))
+                d = np.zeros([a.shape[0], 9])
+                d[:, 3 * act + i] = 1
+                D_train.append(d)
+        data = np.concatenate(D_train, axis=0)
+        return torch.tensor(data)
+
+    def make_masks(self, shape):
+        return torch.ones(shape).unsqueeze(-1)
+
+    def _mod_specific_loaders(self):
+        return {"frames": self.get_frames, "attributes": self.get_attributes, "actions": self.get_actions}
+
+    def _mod_specific_savers(self):
+        return {"frames": self._postprocess_frames, "attributes": self._postprocess_attributes,
+                "actions": self._postprocess_actions}
+
+    def _postprocess_frames(self, data):
+        data = data["data"] if isinstance(data, dict) else data
+        return np.asarray(data.detach().cpu().reshape(-1, *self.feature_dims["frames"])) * 255
+
+    def _postprocess_actions(self, data):
+        data = data["data"] if isinstance(data, dict) else data
+        indices = np.argmax(data.detach().cpu(), axis=-1)
+        return [self.label_map[int(i)] for i in indices]
+
+    def _postprocess_attributes(self, data):
+        data = data["data"] if isinstance(data, dict) else data
+        indices = np.argmax(data.detach().cpu(), axis=-1)
+        atts = []
+        for i in indices:
+            label = ""
+            for att_i, a in enumerate(i):
+                label += self.att_names[att_i][a] + " " + self.attr_map[att_i]
+                label += " \n" if att_i in [0,1,3] else ", "
+            atts.append(label)
+        return atts
+
+    def iter_over_inputs(self, outs, data, mod_names, f=0):
+        input_processed = []
+        for key, d in data.items():
+            output = self._mod_specific_savers()[mod_names[key]](d)
+            images = turn_text2image(output, img_size=self.text2img_size) if mod_names[key] in ["attributes", "actions"] \
+                else output[:, f, :, :, :]
+            images = add_recon_title(images, "input\n{}".format(mod_names[key]), (0, 0, 255))
+            input_processed.append(np.vstack(images))
+            input_processed.append(np.ones((np.vstack(images).shape[0], 2, 3)) * 145)
+        inputs = np.hstack(input_processed).astype("uint8")
+        return np.hstack((inputs, np.vstack(outs).astype("uint8")))
+
+    def save_recons(self, data, recons, path, mod_names):
+        output_processed = self._postprocess_all2img(recons)
+        sequential_mods = [k for k, v in mod_names.items() if v == 'frames'][0] in data.keys() if len(data.keys()) > 1 else False
+        if self.mod_type != "frames" and not sequential_mods:
+            outs = add_recon_title(output_processed, "output\n{}".format(self.mod_type), (0, 170, 0))
+            final = self.iter_over_inputs(outs, data, mod_names)
+            cv2.imwrite(path, cv2.cvtColor(final, cv2.COLOR_BGR2RGB))
+        else:
+            timesteps = []
+            for f in range(8):
+                outs = add_recon_title(output_processed[:, f, :, :, :], "output\n{}".format(self.mod_type), (0, 170, 0))\
+                if self.mod_type == "frames" else add_recon_title(output_processed, "output\n{}".format(self.mod_type), (0, 170, 0))
+                final = self.iter_over_inputs(outs, data, mod_names, f)
+                timesteps.append(final)
+            imageio.mimsave(path.replace(".png", ".gif"), timesteps)
+
+    def _postprocess_all2img(self, data):
+        """
+        Converts any kind of data to images to save traversal visualizations
+
+        :param data: input data
+        :type data: torch.tensor
+        :return: processed images
+        :rtype: torch.tensor
+        """
+        output_processed = self._postprocess(data)
+        output_processed = turn_text2image(output_processed, img_size=self.text2img_size) \
+            if self.mod_type in ["actions", "attributes"] else output_processed
+        return output_processed
+
+    def save_traversals(self, recons, path, num_dims):
+        """
+        Makes a grid of traversals and saves as animated gif image
+
+        :param recons: data to save
+        :type recons: torch.tensor
+        :param path: path to save the traversal to
+        :type path: str
+        """
+        if self.mod_type != "frames":
+            output_processed = torch.tensor(np.asarray(self._postprocess_all2img(recons))).transpose(1, 3)
+            grid = np.asarray(make_grid(output_processed, padding=1, nrow=int(math.sqrt(len(recons)))).transpose(2, 0))
+            cv2.imwrite(path, cv2.cvtColor(grid.astype("uint8"), cv2.COLOR_BGR2RGB))
+        else:
+            grids = []
+            output_processed = torch.tensor(self._postprocess_all2img(recons)).permute(1,0,4,3,2)
+            #output_processed = output_processed.reshape(num_dims, -1, *output_processed.shape[1:]).squeeze()
+            for i in output_processed:
+                grids.append(np.asarray(make_grid(i, padding=1, nrow=int(math.sqrt(len(recons)))).transpose(2, 0)).astype("uint8"))
+            imageio.mimsave(path.replace(".png", ".gif"), grids)
+
+class CELEBA(BaseDataset):
+    feature_dims = {"image": [64, 64, 3],
+                    "atts": [4, 2],
+                    }  # these feature_dims are also used by the encoder and decoder networks
+
+    def __init__(self, pth, testpth, mod_type):
+        super().__init__(pth, testpth, mod_type)
+        self.mod_type = mod_type
+        self.text2img_size = (64,192,3)
+        self.labelmap = [["hairy", "bald"], ["no eyeglasses", "eyeglasses"], ["female", "male"], ["not smiling", "smiling"]]
+
+    def _mod_specific_loaders(self):
+        return {"image": self._preprocess_images, "atts": self._preprocess_atts}
+
+    def _mod_specific_savers(self):
+        return {"image": self._postprocess_images, "atts": self._postprocess_atts}
+
+    def _preprocess_images(self):
+        return super(CELEBA, self)._preprocess_images([self.feature_dims["image"][i] for i in [2,0,1]])
+
+    def _postprocess_images(self, data):
+        data = data["data"] if isinstance(data, dict) else data
+        return np.asarray(data.detach().cpu())*255
+
+    def _postprocess_all2img(self, data):
+        """
+        Converts any kind of data to images to save traversal visualizations
+
+        :param data: input data
+        :type data: torch.tensor
+        :return: processed images
+        :rtype: torch.tensor
+        """
+        output_processed = self._postprocess(data)
+        output_processed = turn_text2image(output_processed, img_size=self.text2img_size) \
+            if self.mod_type in ["atts"] else output_processed
+        return output_processed
+
+    def _postprocess_atts(self, data):
+        if isinstance(data, dict):
+            data = data["data"]
+        data = np.asarray([np.asarray([(s[0]) for s in x]) for x in data.detach().cpu()])
+        data_str = []
+        for s in data:
+            d = []
+            for idx, i in enumerate(s):
+                d.append(self.labelmap[idx][int(i)])
+            data_str.append(", ".join(d))
+        return np.asarray(data_str)
+
+    def _preprocess_atts(self):
+        d = (torch.tensor(self.get_data_raw().astype("float32"))+1)/2
+        data = []
+        for s in d:
+            sample = []
+            for v in s:
+                i = torch.tensor([0,1]) if v == 0 else torch.tensor([1,0])
+                sample.append(i)
+            data.append(torch.stack(sample))
+        return torch.stack(data)
+
+    def save_recons(self, data, recons, path, mod_names):
+        output_processed = self._postprocess_all2img(recons)
+        outs = add_recon_title(output_processed, "output\n{}".format(self.mod_type), (0, 170, 0))
+        input_processed = []
+        for key, d in data.items():
+            output = self._mod_specific_savers()[mod_names[key]](d)
+            images = turn_text2image(output, img_size=self.text2img_size) if mod_names[key] == "atts" \
+                else np.reshape(output,(-1,*self.feature_dims["image"]))
+            images = add_recon_title(images, "input\n{}".format(mod_names[key]), (0, 0, 255))
+            input_processed.append(np.vstack(images))
+            input_processed.append(np.ones((np.vstack(images).shape[0], 2, 3))*125)
+        inputs = np.hstack(input_processed).astype("uint8")
+        final = np.hstack((inputs, np.vstack(outs).astype("uint8")))
+        cv2.imwrite(path, final)
+
+    def save_traversals(self, recons, path, num_dims):
+        """
+        Makes a grid of traversals and saves as image
+
+        :param recons: data to save
+        :type recons: torch.tensor
+        :param path: path to save the traversal to
+        :type path: str
+        :param num_dims: number of latent dimensions
+        :type num_dims: int
+        """
+        if len(recons.shape) < 5:
+            output_processed = torch.tensor(np.asarray(self._postprocess_all2img(recons))).transpose(1, 3)
+            grid = np.asarray(make_grid(output_processed, padding=1, nrow=int(math.sqrt(len(recons)))).transpose(2, 0))
+            cv2.imwrite(path, grid.astype("uint8"))
+        else:
+            output_processed = torch.stack([torch.tensor(self._postprocess_all2img(x)) for x in recons])
+            output_processed = output_processed.reshape(num_dims, -1, *output_processed.shape[1:]).squeeze()
+            rows = []
+            for ind, dim in enumerate(output_processed):
+                rows.append(np.asarray(torch.hstack([x for x in dim]).type(torch.uint8).detach().cpu()))
+            cv2.imwrite(path, np.vstack(np.asarray(rows)))
+
+class VLMROBOT(BaseDataset):
+    feature_dims = {"front RGB": [64,64,3],
+                    "side RGB": [42,64,64,3],
+                    "actions": [210,15, 1],
+                    "language": [14,62, 1]
+                    }  # these feature_dims are also used by the encoder and decoder networks
+
+    def __init__(self, pth, testpth, mod_type):
+        super().__init__(pth, testpth, mod_type)
+        self.mod_type = mod_type
+        self.vocab = self.load_vocab()
+        self.lang_labels = None
+        self.text2img_size = (64, 250, 3)
+
+    def load_vocab(self):
+        assert os.path.exists(os.path.join(os.path.dirname(self.path), "vocab.txt")), "vocab.txt for text not found"
+        vocab = []
+        with open(os.path.join(os.path.dirname(self.path), "vocab.txt"), "r") as f:
+            for line in f:
+                vocab.append(line.replace("\n", ""))
+        return vocab
+
+    def labels(self):
+        if self.current_path is None or self.mod_type != "language":
+            return None
+        return [x[0].split(" ")[0].lower() for x in self.lang_labels]
+
+    def _mod_specific_loaders(self):
+        return {"front RGB": self.get_rgb, "side RGB": self.get_rgb, "actions": self.get_actions, "language": self.get_lang}
+
+    def _mod_specific_savers(self):
+        return {"front RGB": self.postprocess_rgb, "side RGB": self.postprocess_rgb, "actions": self.postprocess_actions,
+                "language":self.postprocess_language}
+
+    def iter_over_inputs(self, outs, data, mod_names, f=0):
+        input_processed = []
+        for key, d in data.items():
+            if mod_names[key] == "actions":
+                pass
+            else:
+                output = self._mod_specific_savers()[mod_names[key]](d)
+                images = turn_text2image(output, img_size=self.text2img_size) if mod_names[key] in ["language", "actions"] \
+                    else output #[:, f, :, :, :]
+                images = add_recon_title(images, "input\n{}".format(mod_names[key]), (0, 0, 255))
+                input_processed.append(np.vstack(images))
+                input_processed.append(np.ones((np.vstack(images).shape[0], 2, 3)) * 145)
+        if len(input_processed) == 0:
+            return None
+        inputs = np.hstack(input_processed).astype("uint8")
+        return np.hstack((inputs, np.vstack(outs).astype("uint8")))
+
+    def postprocess_rgb(self, data):
+        if isinstance(data, dict):
+            data = data["data"].reshape(-1, *self.feature_dims["front RGB"])
+        else:
+            data = data.reshape(-1, *self.feature_dims["front RGB"])
+        data = data * 255 if torch.max(data) <= 1 else data
+        return np.asarray(data.to(torch.uint8).detach().cpu())
+
+    def postprocess_language(self, data):
+        if isinstance(data, dict):
+            o = [seq2words(list(self.vocab), x.detach().cpu()) for x in data["data"]]
+            o = [" ".join(list(compress(x, data["masks"][i]))) for i, x in enumerate(o)]
+        else:
+            o = [" ".join(seq2words(list(self.vocab), x.detach().cpu())) for x in torch.softmax(data, dim=-1)]
+        return o
+
+    def postprocess_actions(self, data):
+        data = data["data"] if isinstance(data, dict) else data
+        return data
+
+    def get_rgb(self):
+        data = self.get_data_raw()
+        data = torch.stack([torch.tensor(np.asarray(x[0])) for x in data])
+        data = data.reshape(-1, 3,64,64)
+        return data/255
+
+    def get_actions(self):
+        self.has_masks = True
+        data = self.get_data_raw()
+        data = [torch.from_numpy(np.asarray(x[::2])) for x in data]
+        masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
+        data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0.0)
+        data_and_masks = torch.cat((data.reshape(data.shape[0], data.shape[1], -1), masks), dim=-1)
+        return data_and_masks
+
+    def get_lang(self):
+        self.has_masks = True
+        self.categorical = True
+        data = self.get_data_raw()
+        self.lang_labels = data
+        d = [one_hot_encode_words(self.vocab, f[0].split(" ")) for f in data]
+        data = [torch.from_numpy(np.asarray(x)) for x in d]
+        masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
+        data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0.0)
+        data_and_masks = torch.cat((data, masks), dim=-1)
+        return data_and_masks
+
+    def _postprocess_all2img(self, data):
+        """
+        Converts any kind of data to images to save traversal visualizations
+
+        :param data: input data
+        :type data: torch.tensor
+        :return: processed images
+        :rtype: torch.tensor
+        """
+        output_processed = self._postprocess(data)
+        output_processed = turn_text2image(output_processed, img_size=self.text2img_size) \
+            if self.mod_type in ["language"] else output_processed
+        return output_processed
+
+    def save_recons(self, data, recons, path, mod_names):
+        if self.mod_type == "language" and [i for i in mod_names if mod_names[i]=="language"][0] in data.keys():
+            recons = {"data":recons, "masks":data[[i for i in mod_names if mod_names[i]=="language"][0]]["masks"]}
+        output_processed = self._postprocess_all2img(recons)
+        rgb_mods = [k for k, v in mod_names.items() if "RGB" in v]
+        if self.mod_type != "actions":
+            outs = add_recon_title(output_processed, "output\n{}".format(self.mod_type), (0, 170, 0))
+            final = self.iter_over_inputs(outs, data, mod_names)
+            if final is not None:
+                cv2.imwrite(path, final)
+        else:
+            commands = []
+            if "mod_1" in data.keys():
+                commands = self.postprocess_language(data["mod_1"])
+            gt = []
+            if "mod_2" in data.keys():
+                gt = self.postprocess_actions(data["mod_2"])
+            actions = list(output_processed)
+            d = {"commands":commands, "gt":gt, "actions":actions}
+            with open(path.replace("png", "pkl"), 'wb') as handle:
+                pickle.dump(d, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+    def save_traversals(self, recons, path, num_dims):
+        """
+        Makes a grid of traversals and saves as animated gif image
+
+        :param recons: data to save
+        :type recons: torch.tensor
+        :param path: path to save the traversal to
+        :type path: str
+        :param num_dims: number of latent dimensions
+        :type num_dims: int
+        """
+        if "RGB" not in self.mod_type:
+            pass
+        else:
+            pass
+
 class LANRO(BaseDataset):
     feature_dims = {"front RGB": [64,64,3],
-                    "objects": [2,3],
-                    "actions": [100,4,1],
-                    "language": [4, 16,1],
+                    "objects": [1,3],
+                    "actions": [40,4,1],
+                    "language": [4, 9,1],
                     "shapes": [2,6],
                     "colors": [2,6]
                     }  # these feature_dims are also used by the encoder and decoder networks
@@ -219,10 +898,17 @@ class LANRO(BaseDataset):
         self.vocab_atts = self.load_vocab(atts=True)
         self.lang_labels = None
         self.text2img_size = (64, 250, 3)
+        self.forbidden_subsets = self.get_forbidden_subsets()
+
+    def get_forbidden_subsets(self):
+        f_s = []
+        if "stage2" in self.path or "stage3" in self.path:
+            f_s = ["front RGB", "objects", "language"]
+        return f_s
 
     def load_vocab(self, atts=False):
         path = self.path
-        vcb = "vocab.txt" if not atts else "vocab_atts.txt"
+        vcb = "vocab.txt"
         if not os.path.exists(os.path.join(os.path.dirname(self.path), vcb)):
             path = os.path.join(os.path.dirname(os.getcwd()), os.path.dirname(self.path), vcb)
         assert os.path.exists(path), "Path to vocab.txt not found"
@@ -235,7 +921,10 @@ class LANRO(BaseDataset):
     def labels(self):
         if self.current_path is None or self.mod_type != "language":
             return None
-        return [" ".join(x.split(" ")[:2]).replace(" the", "") for x in self.lang_labels]
+        if isinstance(self.lang_labels[0], list):
+            return [" ".join(x[0].split(" ")[:2]).replace(" the", "") for x in self.lang_labels]
+        else:
+            return [" ".join(x.split(" ")[:2]).replace(" the", "") for x in self.lang_labels]
 
     def _mod_specific_loaders(self):
         return {"front RGB": self.get_rgb, "objects": self.get_objects, "actions": self.get_actions, "language": self.get_lang,
@@ -270,6 +959,7 @@ class LANRO(BaseDataset):
         data = data * 255 if torch.max(data) <= 1 else data
         return np.asarray(data.to(torch.uint8).detach().cpu())
 
+
     def postprocess_colors(self, data):
         if isinstance(data, dict):
                 o = [seq2words(list(self.vocab_atts), x.detach().cpu()) for x in data["data"]]
@@ -289,9 +979,9 @@ class LANRO(BaseDataset):
 
     def postprocess_language(self, data):
         if isinstance(data, dict):
-            data["data"] = torch.argmax(torch.softmax(data["data"].double(), dim=-1), dim=-1)
-            o = [([self.vocab[int(round(float(i),0))] for i in x.detach().cpu()]) for x in data["data"]]
-            o = [" ".join(list(compress(x, data["masks"][i]))).replace("none","") for i, x in enumerate(o)]
+            data["data"] = torch.argmax(torch.softmax(data["data"].double(), dim=-1), dim=-1).squeeze()
+            o = [([self.vocab[int(round(float(x.detach().cpu()),0))]])[0] for x in data["data"]]
+            #o = [" ".join(list(compress(x, data["masks"][i]))).replace("none","") for i, x in enumerate(o)]
         else:
             o = [" ".join([self.vocab[int(round(float(i),0))] for i in x.detach().cpu()]).replace("none","") for x in torch.argmax(torch.softmax(data, dim=-1), dim=-1)]
         return o
@@ -309,6 +999,9 @@ class LANRO(BaseDataset):
     def get_objects(self):
         data = self.get_data_raw()
         data = [torch.from_numpy(np.asarray(x[0])) for x in data]
+        #masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
+        #data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0.0)
+        #data_and_masks = torch.cat((data.reshape(data.shape[0],self.feature_dims[self.mod_type][0], -1), masks), dim=-1)
         return torch.stack(data)
 
     def get_shapes(self):
@@ -316,6 +1009,9 @@ class LANRO(BaseDataset):
         data = self.get_data_raw()
         d = [one_hot_encode_words(self.vocab_atts, f) for f in data]
         data = [torch.from_numpy(np.asarray(x)) for x in d]
+        #masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
+        #data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0.0)
+        #data_and_masks = torch.cat((data.reshape(data.shape[0],self.feature_dims[self.mod_type][0], -1), masks), dim=-1)
         return torch.stack(data)
 
     def get_colors(self):
@@ -324,6 +1020,9 @@ class LANRO(BaseDataset):
         data = self.get_data_raw()
         d = [one_hot_encode_words(self.vocab_atts, f) for f in data]
         data = [torch.from_numpy(np.asarray(x)) for x in d]
+        #masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
+        #data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0.0)
+        #data_and_masks = torch.cat((data.reshape(data.shape[0],self.feature_dims[self.mod_type][0], -1), masks), dim=-1)
         return torch.stack(data)
 
     def get_actions(self):
@@ -332,21 +1031,32 @@ class LANRO(BaseDataset):
         data = [torch.from_numpy(np.asarray(x)) for x in data]
         masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
         data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0.0)
-        data_and_masks = torch.cat((data.reshape(data.shape[0],self.feature_dims[self.mod_type][0], -1), masks), dim=-1)
+        data_and_masks = torch.cat((data, masks), dim=-1)
         return data_and_masks
 
     def get_lang(self):
-        self.has_masks = True
+        #self.has_masks = True
         self.categorical = True
+        #return self._preprocess_text_onehot()
         data = self.get_data_raw()
-        self.lang_labels = data
-        d = [[self.vocab.index(s) for s in sentence.replace(" object", "").strip().split(" ")] for sentence in data] #[one_hot_encode_words(self.vocab, f.split(" ")) for f in data]
+        if "stage1" in self.path:
+            self.lang_labels = data
+            if isinstance(data[0], list):
+                d = [self.vocab.index(w[0]) for w in data]
+            else:
+                d = [self.vocab.index(w) for w in data]
+        else:
+            data = [x.split(" ") for x in data]
+            self.lang_labels = [x[0] for x in data]
+            d = [[self.vocab.index(s) for s in d if s not in ["", "object"]] for d in data]
+            #self.lang_labels = [x[0] for x in data]
+            #d = [self.vocab.index(s) for s in data] #[one_hot_encode_words(self.vocab, f.split(" ")) for f in data]
         data = [torch.from_numpy(np.asarray(x)) for x in d]
-        masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
-        data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0)
-        data = torch.nn.functional.one_hot(data)
-        data_and_masks = torch.cat((data, masks), dim=-1)
-        return data_and_masks
+        #masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
+        #data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0)
+        data = torch.nn.functional.one_hot(torch.stack(data))
+        #data_and_masks = torch.cat((data, masks), dim=-1)
+        return data #data_and_masks
 
     def _postprocess_all2img(self, data):
         """
@@ -375,7 +1085,7 @@ class LANRO(BaseDataset):
         else:
             actions = list(output_processed)
             d = {"actions": actions}
-            for i, md in enumerate(["mod_1", "mod_2", "mod_3"]):
+            for i, md in enumerate(list(mod_names.keys())):
                 gt = self._mod_specific_savers()[mod_names[md]](data[md]) if md in data.keys() else None
                 d["{}_gt".format(mod_names[md])] = gt
             with open(path.replace("png", "pkl"), 'wb') as handle:
@@ -404,3 +1114,368 @@ class LANRO(BaseDataset):
             for ind, dim in enumerate(output_processed):
                 rows.append(np.asarray(torch.hstack([x for x in dim]).type(torch.uint8).detach().cpu()))
             cv2.imwrite(path, np.vstack(np.asarray(rows)))
+
+class LANROL1(LANRO):
+    feature_dims = {"front RGB": [64,64,3],
+                    "objects": [1,3],
+                    "actions": [100,4,1],
+                    "language": [4, 9,1],
+                    "shapes": [2,6],
+                    "colors": [2,6]
+                    }  # these feature_dims are also used by the encoder and decoder networks
+
+    def __init__(self, pth, testpth, mod_type):
+        super().__init__(pth, testpth, mod_type)
+
+    def get_lang(self):
+        self.has_masks = True
+        self.categorical = True
+        data = self.get_data_raw()
+        if "stage1" in self.path:
+            self.lang_labels = data
+            if isinstance(data[0], list):
+                d = [self.vocab.index(w[0]) for w in data]
+            else:
+                d = [self.vocab.index(w) for w in data]
+        else:
+            self.lang_labels = [x for x in data]
+            data = [x.split(" ") for x in data]
+            d = [[self.vocab.index(s) for s in d if s !=""] for d in data] #[one_hot_encode_words(self.vocab, f.split(" ")) for f in data]
+        data = [torch.from_numpy(np.asarray(x)) for x in d]
+        masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
+        data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0)
+        data = torch.nn.functional.one_hot(data, num_classes=self.feature_dims["language"][1])
+        data_and_masks = torch.cat((data, masks), dim=-1)
+        return data_and_masks
+
+    def labels(self):
+        if self.current_path is None or self.mod_type != "language":
+            return None
+        if isinstance(self.lang_labels[0], list):
+            return [" ".join(x[0].split(" ")[:2]).replace(" the", "") for x in self.lang_labels]
+        else:
+            return [" ".join(x.split(" ")[:2]).replace(" the", "") for x in self.lang_labels]
+    
+    def postprocess_language(self, data):
+        if isinstance(data, dict):
+            data["data"] = torch.argmax(torch.softmax(data["data"].double(), dim=-1), dim=-1)
+            o = [([self.vocab[int(round(float(i),0))] for i in x.detach().cpu()]) for x in data["data"]]
+            o = [" ".join(list(compress(x, data["masks"][i]))).replace("none","") for i, x in enumerate(o)]
+        else:
+            o = [" ".join([self.vocab[int(round(float(i),0))] for i in x.detach().cpu()]).replace("none","") for x in torch.argmax(torch.softmax(data, dim=-1), dim=-1)]
+        return o
+
+
+
+class POLYMNIST(BaseDataset):
+    """Dataset class for the POLYMNIST dataset"""
+    feature_dims = {"m0": [28,28,3],
+                    "m1": [28, 28, 3],
+                    "m2": [28, 28, 3],
+                    "m3": [28, 28, 3],
+                    "m4": [28, 28, 3],
+                    }  # these feature_dims are also used by the encoder and decoder networks
+
+    def __init__(self, pth, testpth, mod_type):
+        super().__init__(pth, testpth, mod_type)
+        self.mod_type = mod_type
+        self.text2img_size = (28,28,3)
+
+    def _mod_specific_loaders(self):
+        d = {}
+        for k in ["m0", "m1", "m2", "m3", "m4"]:
+            d[k] = self._process_mnist
+        return d
+
+    def _mod_specific_savers(self):
+        d = {}
+        for k in ["m0", "m1", "m2", "m3", "m4"]:
+            d[k] = self._postprocess_mnist
+        return d
+
+    def _postprocess_mnist(self, data):
+        if isinstance(data, dict):
+            data = data["data"]
+        images = np.asarray(data.view(-1, 3,28,28).detach().cpu().permute(0,2,3,1))*255
+        return images
+
+    def _process_mnist(self):
+        return self.get_data_raw()
+
+    def save_recons(self, data, recons, path, mod_names):
+        output_processed = self._postprocess(recons)
+        outs = add_recon_title(output_processed, "output\n{}".format(self.mod_type), (0, 170, 0))
+        input_processed = []
+        for key, d in data.items():
+            output = self._mod_specific_savers()[mod_names[key]](d)
+            images = add_recon_title(output, "input\n{}".format(mod_names[key]), (0, 0, 255))
+            input_processed.append(np.vstack(images))
+            input_processed.append(np.ones((np.vstack(images).shape[0], 2, 3))*125)
+        inputs = np.hstack(input_processed).astype("uint8")
+        final = np.hstack((inputs, np.vstack(outs).astype("uint8")))
+        cv2.imwrite(path, cv2.cvtColor(final, cv2.COLOR_BGR2RGB))
+
+    def save_traversals(self, recons, path, num_dims):
+        """
+        Makes a grid of traversals and saves as image
+
+        :param recons: data to save
+        :type recons: torch.tensor
+        :param path: path to save the traversal to
+        :type path: str
+        :param num_dims: number of latent dimensions
+        :type num_dims: int
+        """
+        if len(recons.shape) < 5:
+            output_processed = torch.tensor(np.asarray(self._postprocess_all2img(recons)))
+            grid = np.asarray(make_grid(output_processed, padding=1, nrow=num_dims))
+            cv2.imwrite(path, cv2.cvtColor(np.transpose(grid, (1,2,0)).astype("uint8"), cv2.COLOR_BGR2RGB))
+        else:
+            output_processed = torch.stack([torch.tensor(np.array(self._postprocess(x))) for x in recons])
+            output_processed = output_processed.reshape(num_dims, -1, *output_processed.shape[1:]).squeeze()
+            rows = []
+            for ind, dim in enumerate(output_processed):
+                rows.append(np.asarray(torch.hstack([x for x in dim]).type(torch.uint8).detach().cpu()))
+            cv2.imwrite(path, cv2.cvtColor(np.vstack(np.asarray(rows)), cv2.COLOR_BGR2RGB))
+
+class CELEBA(BaseDataset):
+    feature_dims = {"image": [64, 64, 3],
+                    "atts": [4,1]
+                    }  # these feature_dims are also used by the encoder and decoder networks
+
+    def __init__(self, pth, testpth, mod_type):
+        super().__init__(pth, testpth, mod_type)
+        self.mod_type = mod_type
+        self.text2img_size = (64,192,3)
+
+    def eval_statistics_fn(self):
+        return gebid_eval
+
+    def _mod_specific_loaders(self):
+        return {"image": self._preprocess_images, "text": self._preprocess_text}
+
+    def _mod_specific_savers(self):
+        return {"image": self._postprocess_images, "text": self._postprocess_text}
+
+    def _preprocess_images(self):
+        return super(CELEBA, self)._preprocess_images([self.feature_dims["image"][i] for i in [2,0,1]])
+
+    def _postprocess_images(self, data):
+        if isinstance(data, dict):
+            data = data["data"]
+        return np.asarray(data.detach().cpu())*255
+
+    def _postprocess_text(self, data):
+        if isinstance(data, dict):
+            masks = data["masks"]
+            data = data["data"]
+            text = output_onehot2text(data)
+            if masks is not None:
+                masks = torch.count_nonzero(masks, dim=-1)
+                text = [x[:masks[i]] for i, x in enumerate(text)]
+            return text
+        else:
+            return output_onehot2text(data)
+
+    def _preprocess_text(self):
+        return self._preprocess_text_onehot()
+
+    def save_recons(self, data, recons, path, mod_names):
+        output_processed = self._postprocess_all2img(recons)
+        outs = add_recon_title(output_processed, "output\n{}".format(self.mod_type), (0, 170, 0))
+        input_processed = []
+        for key, d in data.items():
+            output = self._mod_specific_savers()[mod_names[key]](d)
+            images = turn_text2image(output, img_size=self.text2img_size) if mod_names[key] == "text" \
+                else np.reshape(output,(-1,*self.feature_dims["image"]))
+            images = add_recon_title(images, "input\n{}".format(mod_names[key]), (0, 0, 255))
+            input_processed.append(np.vstack(images))
+            input_processed.append(np.ones((np.vstack(images).shape[0], 2, 3))*125)
+        inputs = np.hstack(input_processed).astype("uint8")
+        final = np.hstack((inputs, np.vstack(outs).astype("uint8")))
+        cv2.imwrite(path, final)
+
+class DRAWER(BaseDataset):
+    feature_dims = {"cubeseq": [60,3,1],
+                    "drawerseq": [60,3,2],
+                    "cube": [3],
+                    "drawer": [2,3],
+                    "joints": [60,8,1],
+                    "endeff": [60,8,1],
+                    "language":[3,10, 1],
+                    }  # these feature_dims are also used by the encoder and decoder networks
+
+    def __init__(self, pth, testpth, mod_type):
+        super().__init__(pth, testpth, mod_type)
+        self.mod_type = mod_type
+        #self.vocab = self.load_vocab()
+        self.lang_labels = None
+        self.text2img_size = (64, 250, 3)
+        self.forbidden_subsets = self.get_forbidden_subsets()
+
+    def get_forbidden_subsets(self):
+        f_s = []
+        return f_s
+
+    def load_vocab(self, atts=False):
+        path = self.path
+        vcb = "vocab.txt"
+        if not os.path.exists(os.path.join(os.path.dirname(self.path), vcb)):
+            path = os.path.join(os.path.dirname(os.getcwd()), os.path.dirname(self.path), vcb)
+        assert os.path.exists(path), "Path to vocab.txt not found"
+        vocab = []
+        with open(os.path.join(os.path.dirname(path), vcb), "r") as f:
+            for line in f:
+                vocab.append(line.replace("\n", ""))
+        return vocab
+
+    def labels(self):
+        if self.current_path is None or self.mod_type != "language":
+            return None
+        if isinstance(self.lang_labels[0], list):
+            return [" ".join(x[0].split(" ")[:2]).replace(" the", "") for x in self.lang_labels]
+        else:
+            return [" ".join(x.split(" ")[:2]).replace(" the", "") for x in self.lang_labels]
+
+    def _mod_specific_loaders(self):
+        return {"cubeseq": self.get_cube_seq,
+                "drawerseq": self.get_drawer_seq,
+                "cube": self.get_cube,
+                "drawer": self.get_drawer,
+                "joints": self.get_endeff,
+                "endeff": self.get_endeff,
+                "language":self.get_lang}
+
+    def _mod_specific_savers(self):
+        return {"cubeseq": self.postprocess_drawer_seq,
+                "drawerseq": self.postprocess_drawer_seq,
+                "cube": self.postprocess_drawer,
+                "drawer": self.postprocess_drawer,
+                "joints": self.postprocess_endeff,
+                "endeff": self.postprocess_endeff,
+                "language":self.postprocess_language}
+
+    def iter_over_inputs(self, outs, data, mod_names, f=0):
+        input_processed = []
+        for key, d in data.items():
+            if mod_names[key] in ["actions", "objects"]:
+                pass
+            else:
+                output = self._mod_specific_savers()[mod_names[key]](d)
+                images = turn_text2image(output, img_size=self.text2img_size) if mod_names[key] in ["language", "colors", "shapes"] \
+                    else output #[:, f, :, :, :]
+                images = add_recon_title(images, "input\n{}".format(mod_names[key]), (0, 0, 255))
+                input_processed.append(np.vstack(images))
+                input_processed.append(np.ones((np.vstack(images).shape[0], 2, 3)) * 145)
+        if len(input_processed) == 0:
+            return None
+        inputs = np.hstack(input_processed).astype("uint8")
+        return np.hstack((inputs, np.vstack(outs).astype("uint8")))
+
+
+    def postprocess_language(self, data):
+        if isinstance(data, dict):
+            data["data"] = torch.argmax(torch.softmax(data["data"].double(), dim=-1), dim=-1).squeeze()
+            o = [([self.vocab[int(round(float(x.detach().cpu()),0))]])[0] for x in data["data"]]
+            #o = [" ".join(list(compress(x, data["masks"][i]))).replace("none","") for i, x in enumerate(o)]
+        else:
+            o = [" ".join([self.vocab[int(round(float(i),0))] for i in x.detach().cpu()]).replace("none","") for x in torch.argmax(torch.softmax(data, dim=-1), dim=-1)]
+        return o
+
+    def postprocess_endeff(self, data):
+        data = data["data"] if isinstance(data, dict) else data
+        return data
+
+    def get_cube(self):
+        data = self.get_data_raw()
+        data = [torch.from_numpy(np.asarray(x[0])) for x in data]
+        return torch.stack(data)
+    
+    def get_cube_seq(self):
+        self.has_masks = True
+        data = self.get_data_raw()
+        data = [torch.from_numpy(np.asarray(x)) for x in data]
+        masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
+        data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0.0)
+        data_and_masks = torch.cat((data.reshape(data.shape[0],self.feature_dims[self.mod_type][0], -1), masks), dim=-1)
+        return data_and_masks
+
+    def get_drawer(self):
+        data = self.get_data_raw()
+        data = [torch.from_numpy(np.asarray(x[0])) for x in data]
+        return torch.stack(data)
+    
+    def get_endeff(self):
+        self.has_masks = True
+        data = self.get_data_raw()
+        data = [torch.from_numpy(np.asarray(x)) for x in data]
+        masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
+        data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0.0)
+        for key in ["endeff", "joints", "drawerseq", "cubeseq"]:
+            self.feature_dims[key][0] = data.shape[1]
+        data_and_masks = torch.cat((data.reshape(data.shape[0],self.feature_dims[self.mod_type][0], -1), masks), dim=-1)
+        return data_and_masks
+
+    def get_drawer_seq(self):
+        self.has_masks = True
+        data = self.get_data_raw()
+        data = [torch.from_numpy(np.asarray(x)) for x in data]
+        masks = lengths_to_mask(torch.tensor(np.asarray([x.shape[0] for x in data]))).unsqueeze(-1)
+        data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0.0)
+        data_and_masks = torch.cat((data.reshape(data.shape[0],self.feature_dims[self.mod_type][0], -1), masks), dim=-1)
+        return data_and_masks
+    
+    def postprocess_drawer(self, data):
+        data = data["data"] if isinstance(data, dict) else data
+        return data
+    
+    def postprocess_drawer_seq(self, data):
+        data = data["data"] if isinstance(data, dict) else data
+        return data
+
+    def get_lang(self):
+        self.vocab = self.load_vocab()
+        self.categorical = True
+        self.has_masks = True
+        data = self.get_data_raw()
+        data = [x.split(" ") for x in data]
+        self.lang_labels = [x[0] for x in data]
+        data = [[self.vocab.index(s) for s in d] for d in data]
+        masks = lengths_to_mask(torch.tensor(np.asarray([len(x) for x in data]))).unsqueeze(-1)
+        data = torch.nn.utils.rnn.pad_sequence(torch.stack([torch.tensor(x) for x in data]), batch_first=True, padding_value=0)
+        data = torch.nn.functional.one_hot(data)
+        data_and_masks = torch.cat((data.reshape(data.shape[0],data.shape[1], -1), masks), dim=-1)
+        #self.feature_dims["language"][0] = data.shape[1]
+        #self.feature_dims["language"][1] = (data.shape[2] - 1)
+        return data_and_masks
+
+    def _postprocess_all2img(self, data):
+        """
+        Converts any kind of data to images to save traversal visualizations
+
+        :param data: input data
+        :type data: torch.tensor
+        :return: processed images
+        :rtype: torch.tensor
+        """
+        output_processed = self._postprocess(data)
+        output_processed = turn_text2image(output_processed, img_size=self.text2img_size) \
+            if self.mod_type in ["language", "colors", "shapes"] else output_processed
+        return output_processed
+
+    def save_recons(self, data, recons, path, mod_names):
+        pass
+
+
+    def save_traversals(self, recons, path, num_dims):
+        """
+        Makes a grid of traversals and saves as animated gif image
+
+        :param recons: data to save
+        :type recons: torch.tensor
+        :param path: path to save the traversal to
+        :type path: str
+        :param num_dims: number of latent dimensions
+        :type num_dims: int
+        """
+        pass

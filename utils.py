@@ -4,6 +4,7 @@ import shutil
 import pathlib
 import cv2
 import h5py
+import itertools
 import glob, imageio
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -12,6 +13,7 @@ from collections import defaultdict
 import pickle
 from visualization import tensors_to_df
 from itertools import combinations
+from eval.fid_score import calculate_fid_given_data
 from torch.distributions.categorical import Categorical
 
 def cluster_analysis(labels, path_name, zss_sampled):
@@ -81,7 +83,7 @@ def check_input_unpacked(mods):
         mods = mods[list(mods.keys())[0]]
     return mods
 
-def subsample_input_modalities(mods):
+def subsample_input_modalities(mods, forbidden = []):
     """
     Makes all possible subsets of modalities
 
@@ -91,16 +93,22 @@ def subsample_input_modalities(mods):
     :rtype: list
     """
     mods_inputs = []
-    for m in range(len(mods) + 1):
+    allowed_combos = []
+    for x in range(len(mods.keys())):
+        combos = list(set(itertools.combinations(list(mods.keys()), x+1)))
+        for c in combos:
+            allowed_combos.append(c)
+    for m in allowed_combos:
         mods_input = copy.deepcopy(mods)
+        present_mods = []
         for d in mods.keys():
             mods_input[d]["data"] = None
             mods_input[d]["masks"] = None
-        if m == len(mods.keys()):
-            mods_input = mods
-        else:
-            mods_input["mod_{}".format(m + 1)] = mods["mod_{}".format(m + 1)]
-        mods_inputs.append(mods_input)
+        for key in m:
+            mods_input[key] = mods[key]
+            present_mods.append(key)
+        if "+".join(present_mods) not in forbidden:
+            mods_inputs.append(mods_input)
     return mods_inputs
 
 def data_to_device(data, device):

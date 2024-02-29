@@ -28,16 +28,10 @@ class Task:
         raise NotImplementedError
 
     def is_success(self, achieved_goal: np.ndarray, desired_goal: np.ndarray) -> float:
-        distance = goal_distance(achieved_goal, desired_goal)
-        return float(distance < self.distance_threshold)
+        return False
 
     def compute_reward(self, achieved_goal: np.ndarray, desired_goal: np.ndarray, info) -> float:
-        distance = goal_distance(achieved_goal, desired_goal)
-        self.last_distance = distance
-        if self.reward_type == "sparse":
-            return -(distance > self.distance_threshold).astype(np.float32)
-        else:
-            return -distance
+        return 0
 
     def get_task_metrics(self) -> Dict:
         return {}

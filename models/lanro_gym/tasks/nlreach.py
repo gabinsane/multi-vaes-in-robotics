@@ -21,7 +21,7 @@ class NLReach(LanguageTask):
                  mode: str = 'Color'):
         super().__init__(sim, robot, mode, use_hindsight_instructions, use_action_repair, delay_action_repair,
                          use_negations_action_repair, num_obj, use_synonyms)
-        self.obj_range_low = np.array([-obj_xy_range / 2, -obj_xy_range / 2, 0])
+        self.obj_range_low = np.array([-0.05, -obj_xy_range / 2, 0])
         self.obj_range_high = np.array([obj_xy_range / 2, obj_xy_range / 2, 0])
         self.test_only = True
         self.action_verbs = ["touch", "reach", "contact"]

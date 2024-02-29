@@ -25,6 +25,11 @@ for robot in ['Panda']:
             kwargs=kwargs,
         )
         register(
+            id=f'{robot}Empty{_r_type}-v0',
+            entry_point='lanro_gym.environments:{}EmptyEnv'.format(robot),
+            max_episode_steps=50,
+        )
+        register(
             id=f'{robot}PickAndPlace{_r_type}-v0',
             entry_point='lanro_gym.environments:{}StackEnv'.format(robot),
             max_episode_steps=50,

@@ -120,7 +120,7 @@ class BaseObjective():
             target = target.repeat(K, *([1]*(len(target.shape)-1))).reshape(*output.loc.shape)
         else:
             target = target.repeat(K, *([1] * (len(target.shape) - 1))).reshape(*output.loc.shape)
-            if len(target.shape) == 2:
+            if len(target.shape) == 2 and target.shape[-1] < 2:
                 target = torch.nn.functional.one_hot(target)
         return output, target
 
@@ -500,7 +500,7 @@ class ReconLoss():
         return l(output.loc.cuda(), target.float().cuda().detach()).reshape(bs, -1)
 
     @staticmethod
-    def gaussian_nll(output, target, bs):
+    def optimal_sigma(output, target, bs):
         """Calculate Gaussian NLL with optimal sigma as in Sigma VAE https://github.com/orybkin/sigma-vae-pytorch"""
         log_sigma = ((target.float().cuda().detach().cpu() - output.loc.cpu()) ** 2).mean(list(range(len(output.loc.shape))), keepdim=True).sqrt().log()
         while not log_sigma.shape == torch.Size([]):  # unwrap a nested tensor

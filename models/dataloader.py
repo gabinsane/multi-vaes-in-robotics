@@ -1,5 +1,6 @@
 from pytorch_lightning import LightningDataModule
 import torch
+import os
 import numpy as np
 from models import datasets
 from typing import Optional
@@ -124,12 +125,12 @@ class DataModule(LightningDataModule):
     def train_dataloader(self) -> DataLoader:
         """Return Train DataLoader"""
         return DataLoader(self.dataset_train, batch_size=self.batch_size, shuffle=False, pin_memory=True, collate_fn=self.collate_fn,
-                          num_workers=0)
+                          num_workers=os.cpu_count()-1)
 
     def val_dataloader(self) -> DataLoader:
         """Return Val DataLoader"""
         return DataLoader(self.dataset_val, batch_size=self.batch_size, shuffle=False, pin_memory=True, collate_fn=self.collate_fn,
-                          num_workers=0)
+                          num_workers=os.cpu_count()-1)
 
     def predict_dataloader(self, batch_size, split="val") -> DataLoader:
         """Return Val DataLoader with custom batch size"""

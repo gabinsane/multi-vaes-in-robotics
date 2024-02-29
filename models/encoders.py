@@ -10,10 +10,10 @@ from models.NetworkTypes import NetworkTypes, NetworkRoles
 from models.nn_modules import PositionalEncoding, ConvNet, SamePadConv3d, AttentionResidualBlock, expand_layer, ResUp, ResDown
 from models.nn_modules import PositionalEncoding, ConvNet, SamePadConv3d, AttentionResidualBlock, Flatten
 from utils import Constants
-from torchvision.models import resnet50, ResNet50_Weights
+from torchvision.models import resnet50, ResNet50_Weights, vit_b_16
 
 class VaeComponent(Module):
-    def __init__(self, latent_dim: int, data_dim: tuple, latent_private=None, net_type=NetworkTypes.UNSPECIFIED, net_role=NetworkRoles.UNSPECIFIED):
+    def __init__(self, latent_dim: int, data_dim: tuple, latent_private=None, enc_mu_logvar=True, net_type=NetworkTypes.UNSPECIFIED, net_role=NetworkRoles.UNSPECIFIED):
         """
         Base for all
 
@@ -29,6 +29,7 @@ class VaeComponent(Module):
         super().__init__()
         self.net_role = net_role
         self.latent_dim = latent_dim
+        self.enc_mu_logvar = enc_mu_logvar
         self.latent_private = latent_private
         if self.latent_private is not None:
             self.out_dim = self.latent_dim + self.latent_private
@@ -41,13 +42,16 @@ class VaeComponent(Module):
 
     def init_final_layers(self, in_feats):
         self.mu_layer = Linear(in_feats, self.out_dim, bias=True)
-        self.logvar_layer = Linear(in_feats, self.out_dim, bias=True)
+        if self.enc_mu_logvar:
+            self.logvar_layer = Linear(in_feats, self.out_dim, bias=True)
 
 
     def process_output(self, data, inter_outputs=None):
         out_mus = self.mu_layer(data)
-        out_lvs = F.softmax(self.logvar_layer(data), dim=-1) + Constants.eta
-        return out_mus, out_lvs
+        if self.enc_mu_logvar:
+            out_lvs = F.softmax(self.logvar_layer(data), dim=-1) + Constants.eta
+            return out_mus, out_lvs
+        return out_mus
 
     @abc.abstractmethod
     def forward(self, x):
@@ -62,7 +66,7 @@ class VaeComponent(Module):
         pass
 
 class VaeEncoder(VaeComponent):
-    def __init__(self, latent_dim, data_dim, latent_private, net_type: NetworkTypes):
+    def __init__(self, latent_dim, data_dim, latent_private, enc_mu_logvar, net_type: NetworkTypes):
         """
         Base for all encoders
 
@@ -75,12 +79,12 @@ class VaeEncoder(VaeComponent):
         :param net_type: network type used as encoder
         :type net_type: NetworkTypes
         """
-        super().__init__(latent_dim, data_dim, latent_private, net_type, net_role=1)
+        super().__init__(latent_dim, data_dim, latent_private, enc_mu_logvar, net_type, net_role=1)
         self.net_role = NetworkRoles.ENCODER
 
 
-class Enc_RESCNN(VaeEncoder):
-    def __init__(self, latent_dim, data_dim, latent_private):
+class Enc_CNN(VaeEncoder):
+    def __init__(self, latent_dim, data_dim, latent_private, enc_mu_logvar):
         """
         CNN encoder for RGB images of size 64x64x3
 
@@ -92,7 +96,7 @@ class Enc_RESCNN(VaeEncoder):
         :type latent_private: int
         """
         data_dim = (3, 64, 64)
-        super(Enc_RESCNN, self).__init__(latent_dim, data_dim, latent_private, net_type=NetworkTypes.CNN)
+        super(Enc_CNN, self).__init__(latent_dim, data_dim, latent_private, enc_mu_logvar, net_type=NetworkTypes.CNN)
         hid_channels = 32
         kernel_size = 4
         self.relu = ReLU()
@@ -123,8 +127,41 @@ class Enc_RESCNN(VaeEncoder):
         return self.process_output(out)
 
 
-class Enc_CNN(VaeEncoder):
-    def __init__(self, latent_dim, data_dim, latent_private):
+class Enc_VIT(VaeEncoder):
+    def __init__(self, latent_dim, data_dim, latent_private, enc_mu_logvar):
+        """
+        Vision Transformer (ViT) encoder for RGB images of size 64x64x3
+
+        :param latent_dim: latent vector dimensionality
+        :type latent_dim: int
+        :param data_dim: dimensions of the data defined in config (e.g. [64,64,3] for 64x64x3 images)
+        :type data_dim:
+        :param latent_private: private latent space size (optional)
+        :type latent_private: int
+        """
+        data_dim = (3, 64, 64)
+        super(Enc_VIT, self).__init__(latent_dim, data_dim, latent_private, enc_mu_logvar, net_type=NetworkTypes.CNN)
+        self.silu = SiLU()
+        self.vit = vit_b_16(image_size=64)
+        self.hidden_dim = 1000
+        self.init_final_layers(self.hidden_dim)
+
+    def forward(self, x):
+        """
+        Forward pass
+
+        :param x: data batch
+        :type x: list, torch.tensor
+        :return: tensor of means, tensor of log variances
+        :rtype: tuple(torch.tensor, torch.tensor)
+        """
+        if isinstance(x, dict):
+            x = x["data"]
+        out = self.silu(self.vit(x))
+        return self.process_output(out)
+
+class Enc_CNN2(VaeEncoder):
+    def __init__(self, latent_dim, data_dim, latent_private, enc_mu_logvar):
         """
         CNN encoder for RGB images of size 64x64x3
 
@@ -136,7 +173,7 @@ class Enc_CNN(VaeEncoder):
         :type latent_private: int
         """
         data_dim = (3, 64, 64)
-        super(Enc_CNN, self).__init__(latent_dim, data_dim, latent_private, net_type=NetworkTypes.CNN)
+        super(Enc_CNN2, self).__init__(latent_dim, data_dim, latent_private, enc_mu_logvar, net_type=NetworkTypes.CNN)
         hid_channels = 32
         kernel_size = 4
         hidden_dim = 256
@@ -187,7 +224,7 @@ class Enc_CNN(VaeEncoder):
 
 
 class Enc_MNIST(VaeEncoder):
-    def __init__(self, latent_dim, data_dim, latent_private):
+    def __init__(self, latent_dim, data_dim, latent_private, enc_mu_logvar):
         """
         Image encoder for the MNIST images
 
@@ -198,7 +235,7 @@ class Enc_MNIST(VaeEncoder):
         :param latent_private: (optional) size of the private latent space in case of latent factorization
         :type latent_private: int
         """
-        super(Enc_MNIST, self).__init__(latent_dim, data_dim, latent_private, net_type=NetworkTypes.FNN)
+        super(Enc_MNIST, self).__init__(latent_dim, data_dim, latent_private, enc_mu_logvar, net_type=NetworkTypes.FNN)
         self.net_type = "CNN"
         self.hidden_dim = 400
         modules = [Sequential(Linear(784, self.hidden_dim), ReLU(True))]
@@ -232,7 +269,7 @@ def extra_hidden_layer(hidden_dim):
     return Sequential(Linear(hidden_dim, hidden_dim), ReLU(True))
 
 
-class Enc_RESNETCNN(VaeEncoder):
+class Enc_RESCNN(VaeEncoder):
     """
     Encoder block
     Built for a 3x64x64 image and will result in a latent vector of size z x 1 x 1
@@ -242,8 +279,8 @@ class Enc_RESNETCNN(VaeEncoder):
     and log_var will be None
     """
 
-    def __init__(self, latent_dim, data_dim, latent_private):
-        super(Enc_RESNETCNN, self).__init__(latent_dim, data_dim, latent_private,  net_type=NetworkTypes.CNN)
+    def __init__(self, latent_dim, data_dim, latent_private, enc_mu_logvar):
+        super(Enc_RESCNN, self).__init__(latent_dim, data_dim, latent_private, enc_mu_logvar,  net_type=NetworkTypes.CNN)
         channels = 3
         ch = 64
         self.conv_in = torch.nn.Conv2d(channels, ch, 7, 1, 3)
@@ -265,7 +302,7 @@ class Enc_RESNETCNN(VaeEncoder):
 
 
 class Enc_MNISTMoE(VaeEncoder):
-    def __init__(self, latent_dim, data_dim, latent_private,  num_hidden_layers=1):
+    def __init__(self, latent_dim, data_dim, latent_private, enc_mu_logvar,  num_hidden_layers=1):
         """
         Encoder for MNIST image data.as originally implemented in https://github.com/iffsid/mmvae
 
@@ -278,7 +315,7 @@ class Enc_MNISTMoE(VaeEncoder):
         :param latent_private: (optional) size of the private latent space in case of latent factorization
         :type latent_private: int
         """
-        super(Enc_MNIST2, self).__init__(latent_dim, data_dim, latent_private, net_type=NetworkTypes.FNN)
+        super(Enc_MNIST2, self).__init__(latent_dim, data_dim, latent_private, enc_mu_logvar, net_type=NetworkTypes.FNN)
         modules = []
         hidden_dim = 400
         self.net_type = "FNN"
@@ -304,7 +341,7 @@ class Enc_MNISTMoE(VaeEncoder):
         return self.fc21(e), F.softmax(lv, dim=-1) * lv.size(-1) + Constants.eta
 
 class Enc_PolyMNIST(VaeEncoder):
-    def __init__(self, latent_dim, data_dim, latent_private):
+    def __init__(self, latent_dim, data_dim, latent_private, enc_mu_logvar):
         """
         Encoder for PolyMNIST image data.as originally implemented in https://github.com/gr8joo/MVTCAE/blob/master/mmnist/networks/ConvNetworksImgCMNIST.py
 
@@ -315,7 +352,7 @@ class Enc_PolyMNIST(VaeEncoder):
         :param latent_private: (optional) size of the private latent space in case of latent factorization
         :type latent_private: int
         """
-        super(Enc_PolyMNIST, self).__init__(latent_dim, data_dim, latent_private, net_type=NetworkTypes.FNN)
+        super(Enc_PolyMNIST, self).__init__(latent_dim, data_dim, latent_private, enc_mu_logvar, net_type=NetworkTypes.FNN)
         hidden_dim = 400
         self.net_type = "CNN"
         self.encoder = torch.nn.Sequential(                          # input shape (3, 28, 28)
@@ -348,7 +385,7 @@ class Enc_PolyMNIST(VaeEncoder):
 
 
 class Enc_SVHN2(VaeEncoder):
-    def __init__(self, latent_dim, data_dim, latent_private):
+    def __init__(self, latent_dim, data_dim, latent_private, enc_mu_logvar):
         """
         Encoder for SVHN image data.as originally implemented in https://github.com/iffsid/mmvae
 
@@ -359,7 +396,7 @@ class Enc_SVHN2(VaeEncoder):
         :param latent_private: (optional) size of the private latent space in case of latent factorization
         :type latent_private: int
         """
-        super(Enc_SVHN2, self).__init__(latent_dim, data_dim, latent_private, net_type=NetworkTypes.FNN)
+        super(Enc_SVHN2, self).__init__(latent_dim, data_dim, latent_private, enc_mu_logvar, net_type=NetworkTypes.FNN)
         imgChans = 3
         fBase = 32
         self.net_type = "CNN"
@@ -395,7 +432,7 @@ class Enc_SVHN2(VaeEncoder):
 
 
 class Enc_SVHN(VaeEncoder):
-    def __init__(self, latent_dim, data_dim, latent_private):
+    def __init__(self, latent_dim, data_dim, latent_private, enc_mu_logvar):
         """
         Image encoder for the SVHN dataset or images 32x32x3
 
@@ -406,7 +443,7 @@ class Enc_SVHN(VaeEncoder):
         :param latent_private: (optional) size of the private latent space in case of latent factorization
         :type latent_private: int
         """
-        super(Enc_SVHN, self).__init__(latent_dim, data_dim, latent_private, net_type=NetworkTypes.CNN)
+        super(Enc_SVHN, self).__init__(latent_dim, data_dim, latent_private, enc_mu_logvar, net_type=NetworkTypes.CNN)
         self.net_type = "CNN"
         self.conv1 = Conv2d(3, 32, kernel_size=4, stride=2, padding=1, dilation=1)
         self.conv2 = Conv2d(32, 64, kernel_size=4, stride=2, padding=1, dilation=1)
@@ -441,7 +478,7 @@ class Enc_SVHN(VaeEncoder):
         return mu, logvar
 
 class Enc_FNN(VaeEncoder):
-    def __init__(self, latent_dim, data_dim, latent_private):
+    def __init__(self, latent_dim, data_dim, latent_private, enc_mu_logvar):
         """
         Fully connected layer encoder for any type of data
 
@@ -452,7 +489,7 @@ class Enc_FNN(VaeEncoder):
         :param latent_private: (optional) size of the private latent space in case of latent factorization
         :type latent_private: int
         """
-        super(Enc_FNN, self).__init__(latent_dim, data_dim, latent_private, net_type=NetworkTypes.FNN)
+        super(Enc_FNN, self).__init__(latent_dim, data_dim, latent_private, enc_mu_logvar, net_type=NetworkTypes.FNN)
         self.net_type = "FNN"
         self.hidden_dim = 128
         self.lin1 = torch.nn.DataParallel(Linear(np.prod(data_dim), self.hidden_dim))
@@ -476,7 +513,7 @@ class Enc_FNN(VaeEncoder):
 
 
 class Enc_TransformerIMG(VaeEncoder):
-    def __init__(self, latent_dim, data_dim, latent_private, ff_size=1024, num_layers=8, num_heads=4, dropout=0.1, activation="gelu"):
+    def __init__(self, latent_dim, data_dim, latent_private, enc_mu_logvar, ff_size=1024, num_layers=8, num_heads=4, dropout=0.1, activation="gelu"):
         """
         Encoder for a sequence of images
 
@@ -497,7 +534,7 @@ class Enc_TransformerIMG(VaeEncoder):
         :param activation: activation function
         :type activation: str
         """
-        super(Enc_TransformerIMG, self).__init__(latent_dim, data_dim, latent_private, net_type=NetworkTypes.TRANSFORMER)
+        super(Enc_TransformerIMG, self).__init__(latent_dim, data_dim, latent_private, enc_mu_logvar, net_type=NetworkTypes.TRANSFORMER)
         self.net_type = "Transformer"
         self.ff_size = ff_size
         self.datadim = data_dim
@@ -562,7 +599,7 @@ class Enc_TransformerIMG(VaeEncoder):
 
 
 class Enc_VideoGPT(VaeEncoder):
-    def __init__(self, latent_dim, data_dim, latent_private, n_res_layers=4, downsample=(2, 4, 4)):
+    def __init__(self, latent_dim, data_dim, latent_private, enc_mu_logvar, n_res_layers=4, downsample=(2, 4, 4)):
         """
         Encoder for image sequences taken from https://github.com/wilson1yan/VideoGPT
 
@@ -575,7 +612,7 @@ class Enc_VideoGPT(VaeEncoder):
         :param n_res_layers: number of ResNet layers
         :type n_res_layers: int
         """
-        super(Enc_VideoGPT, self).__init__(latent_dim, data_dim, latent_private, net_type=NetworkTypes.DCNN)
+        super(Enc_VideoGPT, self).__init__(latent_dim, data_dim, latent_private, enc_mu_logvar, net_type=NetworkTypes.DCNN)
         self.net_type = "3DCNN"
         n_times_downsample = np.array([int(math.log2(d)) for d in downsample])
         self.convs = ModuleList()
@@ -619,7 +656,7 @@ class Enc_VideoGPT(VaeEncoder):
 class Enc_Transformer(VaeEncoder):
     """ Transformer VAE as implemented in https://github.com/Mathux/ACTOR"""
 
-    def __init__(self, latent_dim, data_dim, latent_private, ff_size=1024, num_layers=8, num_heads=2, dropout=0.1, activation="gelu"):
+    def __init__(self, latent_dim, data_dim, latent_private, enc_mu_logvar, ff_size=1024, num_layers=8, num_heads=2, dropout=0.1, activation="gelu"):
         """
         Transformer encoder for arbitrary sequential data
 
@@ -640,7 +677,7 @@ class Enc_Transformer(VaeEncoder):
         :param activation: activation function
         :type activation: str
         """
-        super(Enc_Transformer, self).__init__(latent_dim, data_dim, latent_private, net_type=NetworkTypes.TRANSFORMER)
+        super(Enc_Transformer, self).__init__(latent_dim, data_dim, latent_private, enc_mu_logvar, net_type=NetworkTypes.TRANSFORMER)
         self.net_type = "Transformer"
         self.njoints = data_dim[1]
         self.nfeats = data_dim[2]
@@ -657,12 +694,12 @@ class Enc_Transformer(VaeEncoder):
 
         self.skel_Embedding = torch.nn.DataParallel(Linear(self.input_feats, self.out_dim))
         self.sequence_pos_encoder = PositionalEncoding(self.out_dim, self.dropout)
-        seqTransEncoderLayer = torch.nn.DataParallel(TransformerEncoderLayer(d_model=self.out_dim,
+        seqTransEncoderLayer = (TransformerEncoderLayer(d_model=self.out_dim,
                                                                              nhead=self.num_heads,
                                                                              dim_feedforward=self.ff_size,
                                                                              dropout=self.dropout,
                                                                              activation=self.activation))
-        self.seqTransEncoder = torch.nn.DataParallel(
+        self.seqTransEncoder = (
             TransformerEncoder(seqTransEncoderLayer, num_layers=self.num_layers))
 
     def forward(self, batch):
@@ -693,7 +730,7 @@ class Enc_Transformer(VaeEncoder):
 
 
 class Enc_ConvTxt(VaeEncoder):
-    def __init__(self, latent_dim, data_dim, latent_private):
+    def __init__(self, latent_dim, data_dim, latent_private, enc_mu_logvar):
         """
         Encoder configured for text reconstructions
 
@@ -704,7 +741,7 @@ class Enc_ConvTxt(VaeEncoder):
         :param latent_private: (optional) size of the private latent space in case of latent factorization
         :type latent_private: int
         """
-        super(Enc_ConvTxt, self).__init__(latent_dim, data_dim, latent_private,  net_type=NetworkTypes.TXTTRANSFORMER)
+        super(Enc_ConvTxt, self).__init__(latent_dim, data_dim, latent_private, enc_mu_logvar,  net_type=NetworkTypes.TXTTRANSFORMER)
         self.embedding = torch.nn.Embedding(data_dim[-1], 32, padding_idx=0)
         fBase = 32
         self.enc = torch.nn.Sequential(
@@ -751,7 +788,7 @@ class Enc_ConvTxt(VaeEncoder):
 
 
 class Enc_TxtTransformer(VaeEncoder):
-    def __init__(self, latent_dim, data_dim, latent_private, ff_size=128, num_layers=1, num_heads=2, dropout=0.1, activation="gelu"):
+    def __init__(self, latent_dim, data_dim, latent_private, enc_mu_logvar, ff_size=128, num_layers=1, num_heads=2, dropout=0.1, activation="gelu"):
         """
         Transformer encoder configured for character-level text reconstructions
 
@@ -762,7 +799,7 @@ class Enc_TxtTransformer(VaeEncoder):
         :param latent_private: (optional) size of the private latent space in case of latent factorization
         :type latent_private: int
         """
-        super(Enc_TxtTransformer, self).__init__(latent_dim, data_dim, latent_private, net_type=NetworkTypes.TXTTRANSFORMER)
+        super(Enc_TxtTransformer, self).__init__(latent_dim, data_dim, latent_private, enc_mu_logvar, net_type=NetworkTypes.TXTTRANSFORMER)
         self.net_type = "TxtTransformer"
         self.njoints = data_dim[-1]
         self.nfeats = data_dim[-2]
@@ -778,12 +815,12 @@ class Enc_TxtTransformer(VaeEncoder):
         self.embedding_size = 2
         self.embedding = torch.nn.Embedding(self.input_feats, self.embedding_size)
         self.sequence_pos_encoder = PositionalEncoding(self.embedding_size, self.dropout)
-        seqTransEncoderLayer = torch.nn.DataParallel(torch.nn.TransformerEncoderLayer(d_model=self.input_feats * self.embedding_size,
+        seqTransEncoderLayer = (torch.nn.TransformerEncoderLayer(d_model=self.input_feats * self.embedding_size,
                                                                                 nhead=self.num_heads,
                                                                                 dim_feedforward=self.ff_size,
                                                                                 dropout=self.dropout,
                                                                                 activation=self.activation))
-        self.seqTransEncoder = torch.nn.DataParallel(
+        self.seqTransEncoder = (
             torch.nn.TransformerEncoder(seqTransEncoderLayer, num_layers=self.num_layers))
         self.mu_layer = torch.nn.DataParallel(torch.nn.Linear(self.input_feats * self.embedding_size, self.out_dim))
         self.logvar_layer = torch.nn.DataParallel(torch.nn.Linear(self.input_feats * self.embedding_size, self.out_dim))
@@ -801,8 +838,8 @@ class Enc_TxtTransformer(VaeEncoder):
 
 
 class Enc_TxtRNN(VaeEncoder):
-    def __init__(self, latent_dim, data_dim, latent_private, hidden_size=512, n_layers=1, bidirectional=True):
-        super(Enc_TxtRNN, self).__init__(latent_dim, data_dim, latent_private,  net_type=NetworkTypes.TXTTRANSFORMER)
+    def __init__(self, latent_dim, data_dim, latent_private, enc_mu_logvar, hidden_size=512, n_layers=1, bidirectional=True):
+        super(Enc_TxtRNN, self).__init__(latent_dim, data_dim, latent_private, enc_mu_logvar,  net_type=NetworkTypes.TXTTRANSFORMER)
         self.input_size = data_dim[-1] * data_dim[-2]
         self.hidden_size = hidden_size
         self.n_layers = n_layers

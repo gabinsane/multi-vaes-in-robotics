@@ -26,7 +26,7 @@ class NLLeft(LanguageTask):
         self.test_only = False
         self.num_obj = num_obj
         self.min_goal_height = min_goal_height
-        self.obj_range_low = np.array([-0.15, -0.2, 0])
+        self.obj_range_low = np.array([-0.05, -0.2, 0])
         self.obj_range_high = np.array([obj_xy_range, obj_xy_range, 0])
         self.action_verbs = ["move left", "shift left", "drag left"]
         with self.sim.no_rendering():

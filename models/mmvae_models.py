@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from utils import combinatorial, log_joint, log_batch_marginal, get_all_pairs, subsample_input_modalities, find_out_batch_size
 from torch.autograd import Variable
 from itertools import chain, combinations
-
+from models.nn_modules import MultiTransformer
 
 class MOE(TorchMMVAE):
     def __init__(self, vaes:list, n_latents:int, obj_config:dict, model_config=None):
@@ -30,7 +30,7 @@ class MOE(TorchMMVAE):
     def pz_params(self):
         return self._pz_params[0], F.softmax(self._pz_params[1], dim=1) * self._pz_params[1].size(-1)
 
-    def objective(self, data):
+    def objective(self, data, forbidden_subsets=[]):
         """
         Objective function for MoE
 
@@ -53,8 +53,8 @@ class MOE(TorchMMVAE):
             if self.obj_fn.obj_name == "elbo":
                 lpx1 = (torch.tensor(0.0).cuda().exp() * lpx_z)
                 for key, cros_l in output.mods[m_tag].cross_decoder_dist.items():
-                    lpx_z = (self.obj_fn.recon_loss_fn(cros_l, data[m_tag], K=self.K).view(
-                        *cros_l.batch_shape[:1], -1)
+                    lpx_z = (self.obj_fn.recon_loss_fn(cros_l[0], data[m_tag], K=self.K).view(
+                        *cros_l[0].batch_shape[:1], -1)
                              * self.vaes[m_tag].llik_scaling).sum(-1)
                     zs = out_d["latent_samples"][int(key.split("_")[-1]) - 1]["latents"].detach()
                     q = out_d["encoder_dist"][int(key.split("_")[-1]) - 1]
@@ -67,11 +67,12 @@ class MOE(TorchMMVAE):
                 cross_lpx_zs = [lpx_z]
                 for d in out_d["cross_decoder_dist"]:
                     for dis in list(d.values())[0]:
-                      p = self.obj_fn.recon_loss_fn(dis,
-                                                      data[list(d.keys())[0]],
-                                                      K=self.K).view(*out_d["decoder_dist"][int(list(d.keys())[0].split("_")[-1])-1].batch_shape[:1], -1) * \
-                                                      self.vaes[list(d.keys())[0]].llik_scaling
-                      cross_lpx_zs.append(p.sum(-1))
+                        self.obj_fn.set_ltype(self.vaes[list(d.keys())[0]].ltype)
+                        p = self.obj_fn.recon_loss_fn(dis,
+                                                        data[list(d.keys())[0]],
+                                                        K=self.K).view(*out_d["decoder_dist"][int(list(d.keys())[0].split("_")[-1])-1].batch_shape[:1], -1) * \
+                                                        self.vaes[list(d.keys())[0]].llik_scaling
+                        cross_lpx_zs.append(p.sum(-1))
                 lpx_zs.append(cross_lpx_zs)
         lpx = torch.stack([lp for lp in lpx_zs if lp.sum() != 0]) if not isinstance(lpx_zs[0], list) else lpx_zs
         d = {"lpx_z":lpx, "kld": torch.stack(klds), "qz_x":out_d["encoder_dist"], "zs": out_d["latent_samples"], "pz":self.pz, "pz_params":self.pz_params, "K":self.K}
@@ -111,7 +112,10 @@ class MOE(TorchMMVAE):
         for mod_name in missing:
             zs[mod_name] = zs[filled[0]]
             zs[mod_name]["masks"] = x[mod_name]["masks"]
-            px_zs[mod_name] = dist.Normal(*self.vaes[mod_name].decode(zs[filled[0]]))
+            try:
+                px_zs[mod_name] = dist.Normal(*self.vaes[mod_name].decode(zs[filled[0]]))
+            except:
+                pass
         for combo in self.get_crossmodal_combinations(x):
             z = zs[combo[0]]
             z["masks"] = x[combo[1]]["masks"]
@@ -153,15 +157,15 @@ class POE(TorchMMVAE):
         super().__init__(vaes, n_latents, **obj_config)
         self.model_config = model_config
         self.modelName = 'poe'
-        # for vae in self.vaes.values():
-        #     assert vae.prior_str in ["normal", "gaussian"], "POE only works with gaussian priors! Adjust the config"
+        for vae in self.vaes.values():
+            assert vae.prior_str in ["normal", "gaussian"], "POE only works with gaussian priors! Adjust the config"
 
     @property
     def pz_params(self):
         return self._pz_params[0], F.softmax(self._pz_params[1], dim=1) * self._pz_params[1].size(-1)
 
 
-    def objective(self, mods):
+    def objective(self, mods, forbidden_subsets=[]):
         """
         Objective function for PoE
 
@@ -171,7 +175,7 @@ class POE(TorchMMVAE):
         :rtype obj: dict
         """
         lpx_zs, klds, losses = [[] for _ in range(len(mods.keys()))], [], []
-        mods_inputs = subsample_input_modalities(mods)
+        mods_inputs = subsample_input_modalities(mods, forbidden_subsets)
         for m, mods_input in enumerate(mods_inputs):
             output = self.forward(mods_input)
             output_dic = output.unpack_values()
@@ -206,7 +210,7 @@ class POE(TorchMMVAE):
         z = qz_x.rsample(torch.Size([K]))
         qz_d, px_d, z_d = {}, {}, {}
         for mod, vae in self.vaes.items():
-            px_d[mod] = vae.px_z(*vae.decode({"latents": z, "masks": inputs[mod]["masks"]}))
+            px_d[mod] = vae.px_z(*vae.dec({"latents": z, "masks": inputs[mod]["masks"]}))
         for key in inputs.keys():
             qz_d[key] = qz_x
             z_d[key] = {"latents": z, "masks": inputs[key]["masks"]}
@@ -298,7 +302,7 @@ class MoPOE(TorchMMVAE):
         subsets.pop("", None)
         return subsets
 
-    def objective(self, mods):
+    def objective(self, mods, forbidden_subsets=[]):
         """
         Objective function for MoPoE. Computes GENERALIZED MULTIMODAL ELBO https://arxiv.org/pdf/2105.02470.pdf
 
@@ -371,7 +375,7 @@ class MoPOE(TorchMMVAE):
             z = qz_joint[mod].rsample(torch.Size([K]))#qz_d[mod].rsample(torch.Size([1])) if latents["modalities"][mod]["shared"] is not None \
                 #else qz_joint[mod].rsample(torch.Size([1]))
             z_d[mod] = {"latents": z, "masks": inputs[mod]["masks"]}
-            px_d[mod] = vae.px_z(*vae.decode(z_d[mod]))
+            px_d[mod] = vae.px_z(*vae.dec(z_d[mod]))
         return self.make_output_dict(qz_d, px_d, z_d, qz_joint)
 
     def reparameterize(self, mu, logvar):
@@ -438,7 +442,7 @@ class DMVAE(TorchMMVAE):
     def pz_params(self):
         return self._pz_params[0], F.softmax(self._pz_params[1], dim=1) * self._pz_params[1].size(-1)
 
-    def objective(self, mods):
+    def objective(self, mods, forbidden_subsets=[]):
         """
         Objective for the DMVAE model. Source: https://github.com/seqam-lab/
 
@@ -497,13 +501,13 @@ class DMVAE(TorchMMVAE):
                 else self.qz_x(*(torch.zeros(z_joint.shape[1], self.vaes[mod].private_latents),
                                  torch.ones(z_joint.shape[1], self.vaes[mod].private_latents))).rsample(torch.Size([1])).cuda()
            zss[mod] = {"latents": z_shared, "masks": x[mod]["masks"]}
-           px_zs[mod] = self.vaes[mod].px_z(*self.vaes[mod].decode({"latents": torch.cat([z_shared, z_private], -1), "masks": x[mod]["masks"]}))
+           px_zs[mod] = self.vaes[mod].px_z(*self.vaes[mod].dec({"latents": torch.cat([z_shared, z_private], -1), "masks": x[mod]["masks"]}))
            joint_px_zs[mod] = self.vaes[mod].px_z(*self.vaes[mod].dec({"latents": torch.cat([z_joint, z_private], -1),
                                                                        "masks": x[mod]["masks"]}))
            cross_px_zs[mod] = {}
            for m in self.get_remaining_mods_data(qz_xs, mod):
                z_shared = qz_xs[m].rsample(torch.Size([1]))
-               cross_px_zs[mod][m] = self.vaes[mod].px_z(*self.vaes[mod].decode({"latents": torch.cat([z_shared, z_private], -1),
+               cross_px_zs[mod][m] = self.vaes[mod].px_z(*self.vaes[mod].dec({"latents": torch.cat([z_shared, z_private], -1),
                                                                        "masks": x[mod]["masks"]}))
         return self.make_output_dict(qz_xs, px_zs, zss, joint_dist, qz_private, None, joint_px_zs, cross_px_zs)
 
@@ -533,3 +537,4 @@ class DMVAE(TorchMMVAE):
             xm,
             xm + torch.log(torch.sum(torch.exp(x - xm), dim, keepdim=True)))
         return x if keepdim else x.squeeze(dim)
+

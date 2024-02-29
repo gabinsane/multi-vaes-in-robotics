@@ -30,11 +30,11 @@ class GoalEnv(BaseEnv):
                                        dtype=np.float32),
                 desired_goal=spaces.Box(low=self.obs_low,
                                         high=self.obs_high,
-                                        shape=obs["desired_goal"].shape,
+                                        shape=(3,1),
                                         dtype=np.float32),
                 achieved_goal=spaces.Box(low=self.obs_low,
                                          high=self.obs_high,
-                                         shape=obs["achieved_goal"].shape,
+                                         shape=(3,1),
                                          dtype=np.float32),
             ))
 
@@ -42,12 +42,12 @@ class GoalEnv(BaseEnv):
         robot_obs = self.robot.get_obs()
         task_obs = self.task.get_obs()
         observation = np.concatenate([robot_obs, task_obs])
-        achieved_goal = self.task.get_achieved_goal()
-        desired_goal = self.task.get_goal()
+        achieved_goal = None
+        desired_goal = None #self.task.get_goal()
         return {
             "observation": observation.copy(),
-            "achieved_goal": achieved_goal.copy(),
-            "desired_goal": desired_goal.copy(),
+            "achieved_goal": achieved_goal,
+            "desired_goal": desired_goal,
         }
 
     def step(self, action) -> Tuple[Dict[str, np.ndarray], bool, bool, Dict]:
@@ -57,7 +57,7 @@ class GoalEnv(BaseEnv):
         obs = self._get_obs()
         truncated = False
         info = {
-            "is_success": self.task.is_success(obs["achieved_goal"], obs["desired_goal"]),
+            "is_success": False,
         }
         terminated = bool(info["is_success"])
         reward = self.compute_reward(obs["achieved_goal"], obs["desired_goal"], info)
