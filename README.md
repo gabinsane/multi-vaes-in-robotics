@@ -34,16 +34,16 @@ pip install -e .
 ## Dataset download 
 You can download the datasets based on their codes. The codes are the following (explanations are provided in the paper):
 
-![Coding 1]( "dataset codes")
+![Coding 1](https://github.com/gabinsane/multi-vaes-in-robotics/blob/main/data2.png "dataset codes")
 
-![Coding 2]( "dataset codes")
+![Coding 2](https://github.com/gabinsane/multi-vaes-in-robotics/blob/main/data1.png "dataset codes")
 
 
 The dataset should be placed in the ./data/lanro directory. For downloading, unzipping and moving the chosen dataset, run:
 
 ```
 cd ~/multi-vaes-in-robotics/
-wget https://data.ciirc.cvut.cz/public/groups/incognite/LANRO/d1a.zip   # replace d1a with codes from the tables above
+wget https://data.ciirc.cvut.cz/public/groups/incognite/LANRO/d1a.zip   # replace d1a with lowercase codes from the tables above
 unzip d1a.zip -d ./data/lanro 
 ```
 
