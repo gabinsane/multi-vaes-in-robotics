@@ -72,24 +72,11 @@ The usage and possible options for all the config arguments are below (this is a
 After training, you will find various visualizations of the training progress in the _./visuals_ folder of your experiment.
 Furthermore, to evaluate on LANRO, you can choose one of the two scenarios:
 
-### Generating Actions from Images and NL commands
-
 ```
 cd ~/multi-vaes-in-robotics/
 python models/lanro_test.py --model modelpath --dataset 2  # specify the path to the model checkpoint and the dataset level (1-4) on which the model was trained
 ```
-
-The code will run an evaluation on the testset of the dataset. Those are 1200 trials. If you want to use only e.g. every 100th sample, you can add the `--subsample 100` argument
-
-### Generating NL commands from Images and Actions
-
-```
-cd ~/multi-vaes-in-robotics/
-python models/lanro_test_language.py --model modelpath --dataset 2  # specify the path to the model checkpoint and the dataset level (1-4) on which the model was trained
-```
-
-The code will run an evaluation on the testset of the dataset. Those are 1200 trials. If you want to use only e.g. every 100th sample, you can add the `--subsample 100` argument
-
+The code will run an evaluation on 500 trials and provide the successful_percentage.txt file in the model folder next to the .ckpt file.
 
 ## License
 
@@ -99,7 +86,7 @@ This code is published under the [CC BY-NC-SA 4.0 license](https://creativecommo
 ## Acknowledgment
 
 This code is adapted from the [Multimodal VAE Comparison toolkit](https://github.com/gabinsane/multimodal-vae-comparison).
-The toolkit features models and functions from the official implementations of [MVAE](https://github.com/mhw32/multimodal-vae-public) ([paper](https://arxiv.org/abs/1802.05335)), [MMVAE](https://github.com/iffsid/mmvae) ([paper](https://arxiv.org/pdf/1911.03393.pdf)), [MoPoE](https://github.com/thomassutter/MoPoE) ([paper](https://openreview.net/forum?id=5Y21V0RDBV)) and [DMVAE](https://github.com/seqam-lab/DMVAE) ([paper](https://github.com/seqam-lab/DMVAE)).
+The toolkit features models and functions from the official implementations of [MVAE](https://github.com/mhw32/multimodal-vae-public) ([paper](https://arxiv.org/abs/1802.05335)), [MMVAE](https://github.com/iffsid/mmvae) ([paper](https://arxiv.org/pdf/1911.03393.pdf)) and [MoPoE](https://github.com/thomassutter/MoPoE) ([paper](https://openreview.net/forum?id=5Y21V0RDBV)).
 To generate the datasets and evaluate the models, we used an adapted version of the [LANRO simulator](https://github.com/frankroeder/lanro-gym).
 
 ## Contact
