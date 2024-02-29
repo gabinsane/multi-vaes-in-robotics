@@ -49,7 +49,7 @@ unzip d1a.zip -d ./data/lanro
 
 ## Setup and training
 
-You can run the training with the chosedn config as follows (assuming you downloaded or generated the dataset):
+You can run the training with the chosen config as follows (assuming you downloaded or generated the dataset):
 
 ```
 cd ~/multi-vaes-in-robotics/
@@ -61,7 +61,7 @@ We provide configs for the experiments mentioned in the paper in the configs/ fo
 
 The config contains general arguments and modality-specific arguments (denoted as "modality_n"). In general, you can set up a training for 1-N modalities by defining the required subsections for each of them. 
 
-The usage and possible options for all the config arguments are below:
+The usage and possible options for all the config arguments are below (this is an example for another dataset called CdSprites+):
 
 ![Config documentation](https://data.ciirc.cvut.cz/public/groups/incognite/CdSprites/config2.png "config documentation")
 
@@ -79,7 +79,7 @@ cd ~/multi-vaes-in-robotics/
 python models/lanro_test.py --model modelpath --dataset 2  # specify the path to the model checkpoint and the dataset level (1-4) on which the model was trained
 ```
 
-The code will run evaluation on the testset of the dataset. Those are 1200 trials. If you want to use only e.g. every 100th sample, you can add the `--subsample 100` argument
+The code will run an evaluation on the testset of the dataset. Those are 1200 trials. If you want to use only e.g. every 100th sample, you can add the `--subsample 100` argument
 
 ### Generating NL commands from Images and Actions
 
@@ -88,7 +88,7 @@ cd ~/multi-vaes-in-robotics/
 python models/lanro_test_language.py --model modelpath --dataset 2  # specify the path to the model checkpoint and the dataset level (1-4) on which the model was trained
 ```
 
-The code will run evaluation on the testset of the dataset. Those are 1200 trials. If you want to use only e.g. every 100th sample, you can add the `--subsample 100` argument
+The code will run an evaluation on the testset of the dataset. Those are 1200 trials. If you want to use only e.g. every 100th sample, you can add the `--subsample 100` argument
 
 
 ## License
@@ -99,7 +99,7 @@ This code is published under the [CC BY-NC-SA 4.0 license](https://creativecommo
 ## Acknowledgment
 
 This code is adapted from the [Multimodal VAE Comparison toolkit](https://github.com/gabinsane/multimodal-vae-comparison).
-The toolkit features models and functions from the official implementations of [MVAE](https://github.com/mhw32/multimodal-vae-public) ([paper](https://arxiv.org/abs/1802.05335)), [MMVAE](https://github.com/iffsid/mmvae) ([paper](https://arxiv.org/pdf/1911.03393.pdf)) and [MoPoE](https://github.com/thomassutter/MoPoE) ([paper](https://openreview.net/forum?id=5Y21V0RDBV)).
+The toolkit features models and functions from the official implementations of [MVAE](https://github.com/mhw32/multimodal-vae-public) ([paper](https://arxiv.org/abs/1802.05335)), [MMVAE](https://github.com/iffsid/mmvae) ([paper](https://arxiv.org/pdf/1911.03393.pdf)), [MoPoE](https://github.com/thomassutter/MoPoE) ([paper](https://openreview.net/forum?id=5Y21V0RDBV)) and [DMVAE](https://github.com/seqam-lab/DMVAE) ([paper](https://github.com/seqam-lab/DMVAE)).
 To generate the datasets and evaluate the models, we used an adapted version of the [LANRO simulator](https://github.com/frankroeder/lanro-gym).
 
 ## Contact
