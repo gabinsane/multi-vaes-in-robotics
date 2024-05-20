@@ -43,8 +43,8 @@ The dataset should be placed in the ./data/lanro directory. For downloading, unz
 
 ```
 cd ~/multi-vaes-in-robotics/
-wget https://data.ciirc.cvut.cz/public/groups/incognite/LANRO/d1a.zip   # replace d1a with lowercase codes from the tables above
-unzip d1a.zip -d ./data/lanro 
+wget https://data.ciirc.cvut.cz/public/groups/incognite/LANRO/D1a.zip   # replace d1a with lowercase codes from the tables above
+unzip D1a.zip -d ./data/lanro 
 ```
 
 ## Setup and training
