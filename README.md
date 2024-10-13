@@ -1,6 +1,6 @@
 # Multimodal VAEs in Robotics
 
-This is the official code for the IROS 2024 submission "Bridging Language, Vision and Action: Multimodal VAEs in Robotic Manipulation Tasks".
+This is the official code for the IROS 2024 submission "[Bridging Language, Vision and Action: Multimodal VAEs in Robotic Manipulation Tasks](https://arxiv.org/abs/2404.01932)".
 
 We include implementations of the [MVAE](https://github.com/mhw32/multimodal-vae-public) 
 ([paper](https://arxiv.org/abs/1802.05335)), [MMVAE](https://github.com/iffsid/mmvae) 
