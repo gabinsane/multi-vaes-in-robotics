@@ -85,14 +85,12 @@ This code is published under the [CC BY-NC-SA 4.0 license](https://creativecommo
 ## Citation
 
 ```
-@misc{sejnova2024bridginglanguagevisionaction,
+@inproceedings{sejnova2024bridginglanguagevisionaction,
       title={Bridging Language, Vision and Action: Multimodal VAEs in Robotic Manipulation Tasks}, 
       author={Gabriela Sejnova and Michal Vavrecka and Karla Stepanova},
       year={2024},
-      eprint={2404.01932},
-      archivePrefix={arXiv},
-      primaryClass={cs.RO},
-      url={https://arxiv.org/abs/2404.01932}, 
+      booktitle={2024 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)},
+      organization={IEEE}
 }
 ```
 
