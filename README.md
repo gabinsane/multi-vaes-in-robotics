@@ -27,8 +27,6 @@ For evaluation, you will also need to install our local, adapted version of the 
 
 ```
 pip install gymnasium
-cd models/lanro_gym
-pip install -e .
 ```
 
 ## Dataset download 
@@ -73,8 +71,8 @@ After training, you will find various visualizations of the training progress in
 Furthermore, to evaluate on LANRO, you can choose one of the two scenarios:
 
 ```
-cd ~/multi-vaes-in-robotics/
-python models/lanro_test.py --model modelpath --dataset 2  # specify the path to the model checkpoint and the dataset level (1-4) on which the model was trained
+cd ~/multi-vaes-in-robotics/models
+python lanro_test.py --model modelpath --dataset 2  # specify the path to the model checkpoint and the dataset level (1-4) on which the model was trained
 ```
 The code will run an evaluation on 500 trials and provide the successful_percentage.txt file in the model folder next to the .ckpt file.
 
